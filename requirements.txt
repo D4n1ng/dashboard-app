@@ -3,5 +3,6 @@ dnspython
 googlesearch-python
 pandas
 ddgs
-altair==4.2.2
-streamlit>=1.28.0
+altair
+streamlit
+plotly
