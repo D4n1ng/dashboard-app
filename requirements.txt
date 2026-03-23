@@ -2,3 +2,5 @@ requests
 dnspython
 googlesearch-python
 pandas
+streamlit
+ddgs
