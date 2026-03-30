@@ -22,8 +22,89 @@ from module_code import CodeScanner
 from module_social import SocialScanner
 from risk_calculator import calculate_organization_risk
 
-st.set_page_config(page_title="TRUSTEQ SE-Platform", page_icon="🛡️", layout="wide")
+# Helper function and filtering for the new combine_results
+_JUNK_URL_PATTERNS = re.compile(
+    r"activity-\d+|/employees|/impressum|/neuigkeiten|/management|"
+    r"/pressemitteilung|/trusteq-gmbh|/jobs|/about|/posts|"
+    r"linkedin\.com/company/|trk=|feed/update",
+    re.IGNORECASE,
+)
+_PROFILE_URL_PATTERNS = re.compile(
+    r"linkedin\.com/in/[^/]+/?$|"
+    r"xing\.com/profile/[^/]+/?$|"
+    r"github\.com/[^/]+/?$|"
+    r"twitter\.com/[^/]+/?$|"
+    r"x\.com/[^/]+/?$",
+    re.IGNORECASE,
+)
+def _normalize_name(name: str) -> str:
+    if not name or pd.isna(name):
+        return ""
+    name = str(name).lower()
+    # Remove titles / salutations
+    name = re.sub(r"\b(dr\.?|prof\.?|mr\.?|mrs\.?|ms\.?|ing\.?)\s*", "", name)
+    # Remove everything after a dash, pipe, or @ that looks like a job title
+    name = re.split(r"\s*[-–|@]\s*", name)[0]
+    # Strip punctuation and normalise whitespace
+    name = re.sub(r"[^a-zäöüßáéíóúàèìòùâêîôûãñ\s]", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+def _is_profile_url(url: str) -> bool:
+    if not url or not isinstance(url, str):
+        return False
+    url = url.strip()
+    if _JUNK_URL_PATTERNS.search(url):
+        return False
+    return bool(_PROFILE_URL_PATTERNS.search(url))
+def _flatten_links(raw_links) -> List[str]:
+    flat = []
+    if not raw_links:
+        return flat
+    items = raw_links if isinstance(raw_links, list) else [raw_links]
+    for item in items:
+        if isinstance(item, list):
+            for sub in item:
+                s = str(sub).strip().replace(" ", "").replace("\n", "")
+                if s and s not in flat:
+                    flat.append(s)
+        elif item:
+            s = str(item).strip().replace(" ", "").replace("\n", "")
+            if s and s not in flat:
+                flat.append(s)
+    return flat
+def _merge_person_dicts(base: dict, extra: dict) -> dict:
+    # Merge Found_Links
+    base_links = _flatten_links(base.get("Found_Links", []))
+    extra_links = _flatten_links(extra.get("Found_Links", []))
+    merged_links = base_links[:]
+    for lnk in extra_links:
+        if lnk not in merged_links:
+            merged_links.append(lnk)
+    base["Found_Links"] = merged_links
 
+    # Merge Emails
+    base_emails = list(base.get("Emails") or [])
+    extra_emails = list(extra.get("Emails") or [])
+    base["Emails"] = list(set(base_emails + extra_emails))
+
+    # Fill in any empty scalar fields from extra
+    for field in ("Status", "Details", "URL", "Real_Name", "Official_Company"):
+        if not base.get(field) and extra.get(field):
+            base[field] = extra[field]
+
+    # Keep the most informative Username (prefer ones that look like real handles)
+    base_user = str(base.get("Username") or "")
+    extra_user = str(extra.get("Username") or "")
+    if (
+        (not base_user or base_user in ("N/A", "Unknown", ""))
+        and extra_user not in ("N/A", "Unknown", "")
+    ):
+        base["Username"] = extra_user
+
+    return base
+
+# Start of renderinga and code functions in classes
+st.set_page_config(page_title="TRUSTEQ SE-Platform", page_icon="🛡️", layout="wide")
 class AsyncRateLimiter:
     def __init__(self, max_calls: int, period: float):
         self.max_calls = max_calls
@@ -126,139 +207,207 @@ class OSINTCollector:
         
         # Performance tracking
         self.execution_times = {}
-    # TODO no results from this and no prints
-    async def run_enrichment_phase(self, initial_results):
-        st.info("🔄 Phase 2: Enriching and pivoting on discovered identities...")
-        all_people = []
-        
-        # 1. Extract from People module
-        if 'people' in initial_results and isinstance(initial_results['people'], pd.DataFrame) and not initial_results['people'].empty:
-            all_people.extend(initial_results['people'].to_dict('records'))
-            
-        # 2. Extract from Code module (e.g., GitHub users)
-        if 'code' in initial_results and 'users' in initial_results['code']:
-            code_users = initial_results['code']['users']
-            if isinstance(code_users, pd.DataFrame) and not code_users.empty:
-                for _, user in code_users.iterrows():
-                    all_people.append({
-                        'Name': user.get('name', 'Unknown'),
-                        'Username': user.get('login', ''),
-                        'Profile_URL': user.get('html_url', ''),
-                        'Source': 'Code_Module'
-                    })
-                
-        # 3. Deduplicate entities
-        unique_entities = {}
-        for person in all_people:
-            key = person.get('Username') or person.get('Name')
-            if key and key != 'Unknown':
-                if key not in unique_entities:
-                    unique_entities[key] = person
 
-        # 4. Rerun Pivot and Social Scans in parallel
-        enriched_profiles = []
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(self._pivot_and_social_task, entity) for entity in unique_entities.values()]
-            for future in as_completed(futures):
-                enriched_profiles.append(future.result())
-                
-        initial_results['enriched_identities'] = enriched_profiles
-        return initial_results
-    # TODO no results from this and no prints
-    def _pivot_and_social_task(self, entity):
-        results = {'base_data': entity, 'pivot_findings': [], 'social_links': []}
-        name = entity.get('Name')
-        username = entity.get('Username')
-        
-        if name and name != "Unknown":
-            query_name = f'"{name}" "{self.target_company}"'
-            results['pivot_findings'].extend(self.people_scanner.search_duckduckgo(query=query_name, limit=2))
-            results['social_links'].extend(self.social_scanner.search_entity_globally(name, self.target_company)) 
 
-        if username and username != "Unknown":
-            query_user = f'"{username}" "{self.target_company}"'
-            results['pivot_findings'].extend(self.people_scanner.search_duckduckgo(query=query_user, limit=2))
+    def _enrich_and_pivot(self, found_entities, df_github_users):
+        st.info("🔄 Phase 5: Enriching identities and pivoting across sources...")
 
-        return results
-    
-    async def run_parallel_scans(self):
-        async with aiohttp.ClientSession() as session:
-            tasks = [
-                asyncio.create_task(self._scan_infrastructure()),
-                asyncio.create_task(self._scan_people_osint()),
-                asyncio.create_task(self.run_code_scan(set(), set(), [])),
-                asyncio.create_task(self.process_github_users_async(pd.DataFrame())),
-                asyncio.create_task(self.run_full_osint_process()),
-            ]
-            
-            results = await asyncio.gather(*tasks)
+        # 1. Collect all candidates from both OSINT and GitHub
+        all_candidates = {}  # key → entity dict (deduplicated by name/username)
+
+        for entity in found_entities:
+            key = (entity.get("username") or entity.get("name", "")).lower()
+            if key and key != "unknown":
+                all_candidates[key] = entity
+
+        if not df_github_users.empty:
+            for _, user in df_github_users.iterrows():
+                username = str(user.get("login") or user.get("Username") or "")
+                real_name = str(user.get("name") or user.get("Real_Name") or username)
+                key = username.lower() or real_name.lower()
+                if key and key not in all_candidates:
+                    all_candidates[key] = {
+                        "name": real_name,
+                        "username": username,
+                        "url": f"https://github.com/{username}" if username else None,
+                        "source": "GitHub",
+                        "emails": user.get("Emails", []),
+                        "scraped_social_links": [],
+                        "snippet": "",
+                    }
+
+        if not all_candidates:
+            st.info("ℹ️ No candidates to enrich.")
+            return found_entities
+
+        st.write(f"🔍 Enriching {len(all_candidates)} unique identities...")
+
+        # 2. Run pivot + social searches in parallel
+        def _pivot_task(entity):
+            results = {
+                "base_data": entity,
+                "extra_links": list(entity.get("scraped_social_links") or []),
+            }
+            name = entity.get("name", "")
+            username = entity.get("username", "")
+
+            # DuckDuckGo pivot on name + company
+            if name and name.lower() not in ("unknown", ""):
+                hits = self.people_scanner.search_duckduckgo(
+                    query=f'"{name}" "{self.target_company}"', limit=2
+                )
+                for h in hits:
+                    link = h.get("Link") or h.get("href")
+                    if link and link not in results["extra_links"]:
+                        results["extra_links"].append(link)
+
+                # Social scan on real name
+                social_hits = self.social_scanner.search_entity_globally(
+                    name, self.target_company
+                )
+                for hit in social_hits:
+                    link = hit.get("Found_URL") or hit.get("Link") or hit.get("link")
+                    if link and link not in results["extra_links"]:
+                        results["extra_links"].append(link)
+
+            # DuckDuckGo pivot on username
+            if username and username.lower() not in ("unknown", "n/a", ""):
+                hits = self.people_scanner.search_duckduckgo(
+                    query=f'"{username}" "{self.target_company}"', limit=2
+                )
+                for h in hits:
+                    link = h.get("Link") or h.get("href")
+                    if link and link not in results["extra_links"]:
+                        results["extra_links"].append(link)
+
             return results
-            
-    # TODO no results from this and no prints
-    async def run_full_osint_process(self):
-        st.info("🔍 Phase 1: Running initial module discovery...")
-        results = await self.run_parallel_scans() 
-        enriched_data = await self.run_enrichment_phase(results)
-        
-        if self.hibp_api_key:
-            st.info("📧 Phase 3: Checking discovered emails for breaches...")
-            emails_to_check = self.extract_all_emails(enriched_data)
-            breach_results = {}
-            for email in emails_to_check:
-                breach_results[email] = self.breach_scanner.check_hibp(email, self.hibp_api_key)
-                time.sleep(1.6)
-            enriched_data['breach_report'] = breach_results
 
-        return enriched_data
+        enriched = []
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(_pivot_task, entity): entity
+                for entity in all_candidates.values()
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    # Merge extra_links back into the entity
+                    entity = result["base_data"]
+                    entity["scraped_social_links"] = result["extra_links"]
+                    enriched.append(entity)
+                except Exception as e:
+                    print(f"⚠️ Enrich task failed: {e}")
 
-    async def _scan_infrastructure(self):
-        start = time.time()
-        
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            dns_future = executor.submit(self.infra_scanner.analyze_dns_txt)
-            web_future = executor.submit(self.infra_scanner.analyze_web_headers)
-            subdomain_future = executor.submit(self.infra_scanner.check_subdomains)
-            
-            dns_data = dns_future.result()
-            web_data = web_future.result()
-            subdomains = subdomain_future.result()
-        
-        enrichment = self.enricher.get_details(self.target_domain)
-        infra_combined = dns_data + web_data
-        
-        self.execution_times['infrastructure'] = time.time() - start
-        return infra_combined, subdomains, enrichment
+        st.write(f"✅ Enrichment done: {len(enriched)} profiles processed")
+        return enriched
 
-    async def _scan_people_osint(self):
-        start = time.time()
-        
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                self.people_scanner.scan_all_sources, 
-                limit=5  
-            )
-            df_people = future.result()
-        
-        people_keywords = set()
-        found_entities = []
-        
-        if not df_people.empty:
-            for _, person in df_people.iterrows():
-                entity = {}
-                if 'Name' in person and person['Name']:
-                    entity['name'] = str(person['Name'])
-                    name_parts = str(person['Name']).lower().split()
-                    people_keywords.update(name_parts)
-                
-                if 'Username' in person and person['Username']:
-                    entity['username'] = str(person['Username'])
-                    people_keywords.add(str(person['Username']).lower())
-                
-                if entity:
-                    found_entities.append(entity)
-        
-        self.execution_times['people_osint'] = time.time() - start
-        return df_people, people_keywords, found_entities
+    def _combine_people_results(self, df_osint: pd.DataFrame, df_github: pd.DataFrame) -> pd.DataFrame:
+        # 1. Collect all rows into dicts
+        candidates: List[dict] = []
+
+        def _row_to_dict(row, source_label: str) -> dict:
+            links = []
+            for col in ("URL", "url", "profile_url", "Link"):
+                val = row.get(col)
+                if val and pd.notna(val) and str(val).strip() not in links:
+                    links.append(str(val).strip())
+
+            if "Found_Links" in row:
+                links = _flatten_links(row.get("Found_Links")) or links
+
+            name = str(row.get("Name") or row.get("Real_Name") or "Unknown").strip()
+            username = str(row.get("Username") or "N/A").strip()
+
+            # Discard username if it's clearly a URL slug / path, not a handle
+            if re.search(r"[/\s]|activity-\d+", username):
+                username = "N/A"
+
+            return {
+                "Name": name,
+                "Username": username,
+                "Source": str(row.get("Source") or source_label),
+                "Status": str(row.get("Status") or source_label),
+                "Official_Company": str(row.get("Official_Company") or row.get("Company") or self.target_company),
+                "Found_Links": links,
+                "Emails": list(row.get("Emails") or []),
+                "URL": row.get("URL") or row.get("url") or (links[0] if links else None),
+                "Details": str(row.get("Details") or ""),
+                "Real_Name": str(row.get("Real_Name") or name),
+                "_norm": _normalize_name(name),
+            }
+
+        if not df_osint.empty:
+            for _, row in df_osint.iterrows():
+                candidates.append(_row_to_dict(row, "OSINT"))
+
+        if not df_github.empty:
+            for _, row in df_github.iterrows():
+                candidates.append(_row_to_dict(row, "GitHub"))
+
+        # 2. Deduplicate by normalised name 
+        merged: List[dict] = []
+
+        def _names_overlap(norm_a: str, norm_b: str) -> bool:
+            tokens_a = set(norm_a.split())
+            tokens_b = set(norm_b.split())
+            if len(tokens_a) < 2 or len(tokens_b) < 2:
+                return False
+            common = tokens_a & tokens_b
+            return len(common) >= 2
+
+        for candidate in candidates:
+            norm = candidate["_norm"]
+            if not norm or norm == "unknown":
+                merged.append(candidate)
+                continue
+
+            # Try to find an existing merged entry to absorb into
+            matched = None
+            for existing in merged:
+                existing_norm = existing.get("_norm", "")
+                if not existing_norm:
+                    continue
+                # Exact match
+                if norm == existing_norm:
+                    matched = existing
+                    break
+                # Partial token overlap
+                if _names_overlap(norm, existing_norm):
+                    matched = existing
+                    break
+
+            if matched:
+                _merge_person_dicts(matched, candidate)
+            else:
+                merged.append(candidate)
+
+        # 3. Post-process each merged person 
+        for person in merged:
+            # Remove the internal normalisation key
+            person.pop("_norm", None)
+
+            # Filter junk links, keep only real profile URLs
+            all_links = _flatten_links(person.get("Found_Links", []))
+            profile_links = [l for l in all_links if _is_profile_url(l)]
+            # Fall back to all links if filtering removed everything
+            person["Found_Links"] = profile_links if profile_links else all_links
+
+            # Ensure URL points to the best available profile link
+            if not person.get("URL") or not _is_profile_url(str(person.get("URL", ""))):
+                if person["Found_Links"]:
+                    # Prefer LinkedIn > XING > GitHub > anything else
+                    for preferred in ("linkedin.com/in/", "xing.com/profile/", "github.com/"):
+                        for lnk in person["Found_Links"]:
+                            if preferred in lnk.lower():
+                                person["URL"] = lnk
+                                break
+                        if person.get("URL"):
+                            break
+                    if not person.get("URL"):
+                        person["URL"] = person["Found_Links"][0]
+
+        return pd.DataFrame(merged) if merged else pd.DataFrame()
+
 
     def _check_github_api_details(self):
         try:
@@ -476,8 +625,8 @@ class OSINTCollector:
             "Username": username or "N/A",
             "Source": "GitHub Profile",
             "Status": "✅ Verified Employee" if is_employee else "👤 GitHub User",
-            "Offizielle_Firma": company,
-            "Gefundene_Links": links,
+            "Official_Company": company,
+            "Found_Links": links,
             "Emails": emails,
             "URL": github_url,
             "Details": details_text,
@@ -549,14 +698,16 @@ class OSINTCollector:
             api_budget = min(250, remaining_calls)
             st.info(f"📊 API Budget: {api_budget} calls (of {remaining_calls} remaining)")
             if remaining_calls < 100:
-                st.warning(f"⚠️ Nur {remaining_calls} API Calls übrig. Reset um {reset_time.strftime('%H:%M:%S')}")
+                st.warning(f"⚠️ Only {remaining_calls} API calls remaining. Reset at {reset_time.strftime('%H:%M:%S')}")
         else:
-            st.warning("🌐 GitHub API nicht verfügbar - verwende nur Web-Suche")
+            st.warning("🌐 GitHub API not available - use web search only")
 
         # Phase 1: Infrastructure 
         status_text.text("🌐 Phase 1/5: Analyzing DNS Records and Web-Header...")
-        st.session_state['scan_status'] = "🌐 Phase 1/5: Analyzing DNS Records and Web-Header..."
-        st.session_state['scan_progress'] = 10
+        st.session_state.update(
+            scan_status="🌐 Phase 1/5: Analyzing DNS Records and Web-Header...",
+            scan_progress=10,
+        )
         progress_bar.progress(10)
         
         infra_all = self.infra_scanner.analyze_all()
@@ -567,6 +718,7 @@ class OSINTCollector:
         enrichment = self.enricher.get_details(self.target_domain)
         infra_combined = dns_data + web_data
 
+        #Freely adaptable for more details
         tech_keywords = set()
         for item in infra_combined:
             if 'Software' in item:
@@ -575,12 +727,14 @@ class OSINTCollector:
                 tech_keywords.add(item['Server'].lower())
         
         if tech_keywords:
-            st.write(f"🔧 Gefundene Technologien: {', '.join(list(tech_keywords)[:5])}")
+            st.write(f"🔧 Found Technologies: {', '.join(list(tech_keywords)[:5])}")
 
         # Phase 2: OSINT People
         status_text.text("👥 Phase 2/5: Searching Employees via OSINT...")
-        st.session_state['scan_status'] = "👥 Phase 2/5: Searching Employees via OSINT..."
-        st.session_state['scan_progress'] = 25
+        st.session_state.update(
+            scan_status="👥 Phase 2/5: Searching Employees via OSINT...",
+            scan_progress=25,
+        )
         progress_bar.progress(25)
 
         df_people_osint = self.people_scanner.scan_all_sources(limit=10)
@@ -618,7 +772,7 @@ class OSINTCollector:
                     entity['scraped_social_links'].append(primary_url)
                 
                 entity['emails'] = person.get('Emails', [])
-                entity['source'] = str(person.get('Quelle') or person.get('Source') or "OSINT")
+                entity['source'] = str(person.get('Engine') or person.get('Source') or "OSINT")
                 entity['snippet'] = str(person.get('Snippet', ''))[:200]
                 
                 name = entity['name']
@@ -657,43 +811,51 @@ class OSINTCollector:
 
                 entity['scraped_social_links'] = list(set(entity['scraped_social_links'] + verified_social_links))
                 found_entities_from_osint.append(entity)
-
-        if hasattr(self.people_scanner, 'discovered_people'):
+        # Merge people discovered during scraping
+        if hasattr(self.people_scanner, "discovered_people"):
+            existing_names_low = {
+                e.get("name", "").lower() for e in found_entities_from_osint
+            }
             for person in self.people_scanner.discovered_people:
-                name_lower = person['name'].lower()
-                exists = False
-                
-                for entity in found_entities_from_osint:
-                    if entity.get('name', '').lower() == name_lower:
-                        exists = True
-                        if person.get('url') and 'url' in entity:
-                            if isinstance(entity.get('url'), list):
-                                if person['url'] not in entity['url']:
-                                    entity['url'].append(person['url'])
-                            else:
-                                existing_url = entity.get('url')
-                                if existing_url != person['url']:
-                                    entity['url'] = [existing_url, person['url']] if existing_url else [person['url']]
-                        break
-                
-                if not exists:
-                    found_entities_from_osint.append({
-                        'name': person['name'],
-                        'url': person.get('url'),
-                        'source': person.get('source', 'Discovered from page'),
-                        'snippet': f"Discovered from {person.get('source', 'unknown page')}"
-                    })
+                name_lower = person["name"].lower()
+                if name_lower in existing_names_low:
+                    # Merge URL into existing entity
+                    for entity in found_entities_from_osint:
+                        if entity.get("name", "").lower() == name_lower:
+                            new_url = person.get("url")
+                            if new_url:
+                                existing_url = entity.get("url")
+                                if isinstance(existing_url, list):
+                                    if new_url not in existing_url:
+                                        existing_url.append(new_url)
+                                elif existing_url and existing_url != new_url:
+                                    entity["url"] = [existing_url, new_url]
+                                else:
+                                    entity["url"] = new_url
+                            break
+                else:
+                    found_entities_from_osint.append(
+                        {
+                            "name": person["name"],
+                            "url": person.get("url"),
+                            "source": person.get("source", "Discovered from page"),
+                            "snippet": f"Discovered from {person.get('source', 'unknown page')}",
+                        }
+                    )
+                    existing_names_low.add(name_lower)
                     st.caption(f"  ✅ Added discovered person: {person['name']}")
 
-        st.write(f"👤 Gefundene Entitäten aus OSINT: {len(found_entities_from_osint)}")
+        st.write(f"👤 Found Entities from OSINT: {len(found_entities_from_osint)}")
         if found_entities_from_osint:
             with_urls = sum(1 for e in found_entities_from_osint if e.get('url'))
             st.caption(f"   📎 Davon mit URLs: {with_urls}")
 
         # Phase 3: Social Media
         status_text.text("🔄 Phase 3/5: Searching for Social Media Profiles...")
-        st.session_state['scan_status'] = "🔄 Phase 3/5: Searching for Social Media Profiles..."
-        st.session_state['scan_progress'] = 40
+        st.session_state.update(
+            scan_status="🔄 Phase 3/5: Searching for Social Media Profiles...",
+            scan_progress=40,
+        )
         progress_bar.progress(40)
 
         social_entities = []
@@ -742,22 +904,25 @@ class OSINTCollector:
         
         if api_available and api_budget > 20:
             status_text.text(f"🔍 Phase 4/5: GitHub API Scan (Budget: {api_budget} Calls)...")
-            st.session_state['scan_status'] = f"🔍 Phase 4/5: GitHub API Scan (Budget: {api_budget} Calls)..."
-            st.session_state['scan_progress'] = 60
-            progress_bar.progress(60)
+            st.session_state.update(
+                scan_status=f"🔍 Phase 4/5: GitHub API Scan (Budget: {api_budget} Calls)...",
+                scan_progress=60,
+            )
             
             self.code_scanner.use_web_always = False
             self.code_scanner.using_fallback = False
         else:
             status_text.text("🔍 Phase 4/5: GitHub Web-Fallback Scan...")
-            st.session_state['scan_status'] = "🔍 Phase 4/5: GitHub Web-Fallback Scan..."
-            st.session_state['scan_progress'] = 60
-            progress_bar.progress(60)
+            st.session_state.update(
+                scan_status="🔍 Phase 4/5: GitHub Web-Fallback Scan...",
+                scan_progress=60,
+            )
             
             self.code_scanner.use_web_always = True
             self.code_scanner.using_fallback = True
             used_web_fallback = True
-        
+
+        progress_bar.progress(60)
         self.code_scanner.searched_terms.add(self.target_company.lower())
         priority_terms = [k for k in people_keywords if len(k) > 3][:5]
         self.code_scanner.searched_terms.update(priority_terms)
@@ -778,24 +943,24 @@ class OSINTCollector:
                 is_cached = False
                 
                 if used_web_fallback:
-                    st.success(f"✅ Web-Fallback Scan erfolgreich: {len(df_code)} Repos, {len(df_github_users)} Nutzer")
+                    st.success(f"✅ Web-Fallback Scan successful: {len(df_code)} Repos, {len(df_github_users)} Users")
                 else:
-                    st.success(f"✅ API Scan erfolgreich: {len(df_code)} Repos, {len(df_github_users)} Nutzer")
+                    st.success(f"✅ API Scan successful: {len(df_code)} Repos, {len(df_github_users)} Users")
             else:
-                st.warning("⚠️ GitHub Scan lieferte keine Ergebnisse. Versuche Cache...")
+                st.warning("⚠️ GitHub Scan showed no results. Trying cache...")
                 cached_data = self.cache_manager.load(self.cache_key)
                 if cached_data:
-                    st.info("📦 Verwende gecachte GitHub-Daten...")
+                    st.info("📦 Using cached GitHub-Data...")
                     df_code = cached_data['code']
                     is_cached = True
                 else:
-                    st.warning("ℹ️ Keine gecachten GitHub-Daten vorhanden.")
+                    st.warning("ℹ️ No cached GitHub-Data available.")
                     
         except Exception as e:
-            st.error(f"❌ GitHub Scan fehlgeschlagen: {e}")
+            st.error(f"❌ GitHub Scan failed: {e}")
             cached_data = self.cache_manager.load(self.cache_key)
             if cached_data:
-                st.info("📦 Verwende gecachte GitHub-Daten...")
+                st.info("📦 Using cached GitHub-Data...")
                 df_code = cached_data['code']
                 is_cached = True
 
@@ -803,9 +968,13 @@ class OSINTCollector:
 
         # Phase 5: Pivot & Combine 
         status_text.text("🕵️ Phase 5/5: Analyze and combine findings...")
-        st.session_state['scan_status'] = "🕵️ Phase 5/5: Analyze and combine findings..."
-        st.session_state['scan_progress'] = 80
+        st.session_state.update(
+                scan_status="🕵️ Phase 5/5: Analyze and combine findings...",
+                scan_progress=80,
+            )
         progress_bar.progress(80)
+
+        enriched_entities = self._enrich_and_pivot(found_entities_from_osint, df_github_users)
         
         df_github_pivoted = pd.DataFrame()
 
@@ -816,7 +985,7 @@ class OSINTCollector:
             )
             cache_key = "github_scan_" + str(sorted(df_github_users[login_col].tolist()))          
             if cache_key not in st.session_state:
-                st.write(f"Analysiere {min(5, len(df_github_users))} GitHub-Entitäten auf Social Media...")
+                st.write(f"Analyze {min(5, len(df_github_users))} GitHub-Entities from Social Media...")
                 
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -831,122 +1000,82 @@ class OSINTCollector:
             cached = st.session_state.get(cache_key, [])
             if cached:
                 df_github_pivoted = pd.DataFrame(cached)
+        # Build final people DataFrame using the fixed _combine_people_results
+        # Convert enriched_entities list back to a DataFrame for the combiner
+        df_enriched_osint = pd.DataFrame(
+            [
+                {
+                    "Name": e.get("name", "Unknown"),
+                    "Username": e.get("username", "N/A"),
+                    "Source": e.get("source", "OSINT"),
+                    "Status": "OSINT Found",
+                    "Company": self.target_company,
+                    "Found_Links": e.get("scraped_social_links", []),
+                    "Emails": e.get("emails", []),
+                    "URL": e.get("url"),
+                    "Details": e.get("snippet", "")[:200],
+                    "Real_Name": e.get("name", "Unknown"),
+                }
+                for e in enriched_entities
+            ]
+        )
 
-        # Combine all data
-        dfs_to_concat = []
-        
-        if not df_github_pivoted.empty:
-            dfs_to_concat.append(df_github_pivoted)
-        
-        if found_entities_from_osint:
-            osint_list = []
-            existing_names = set()
-            if dfs_to_concat:
-                for df in dfs_to_concat:
-                    if not df.empty and 'Name' in df.columns:
-                        existing_names.update([str(n).lower() for n in df['Name'].dropna() if pd.notna(n)])
-            
-            for entity in found_entities_from_osint[:10]:
-                name = entity.get('name', '')
-                name_lower = name.lower()
-                
-                if name_lower in existing_names:
-                    st.caption(f"   ⏭️ Skipping {name} (already found via GitHub)")
-                    continue
-                
-                if name:
-                    links = []
-                    if entity.get('url'):
-                        if isinstance(entity['url'], list):
-                            links.extend(entity['url'])
-                        else:
-                            links.append(str(entity['url']))
-                    
-                    if entity.get('scraped_social_links'):
-                        for link in entity['scraped_social_links']:
-                            if link not in links:
-                                links.append(link)
-                    
-                    primary_url = None
-                    if links:
-                        linkedin_urls = [l for l in links if 'linkedin.com' in l.lower()]
-                        primary_url = linkedin_urls[0] if linkedin_urls else links[0]
-                    
-                    emails = entity.get('emails', [])
-                    
-                    details = entity.get('snippet', '')
-                    if entity.get('source'):
-                        details = f"{details} | Source: {entity['source']}" if details else f"Source: {entity['source']}"
-                    
-                    osint_list.append({
-                        "Name": name,
-                        "Username": entity.get('username', 'N/A'),
-                        "Source": entity.get('source', 'OSINT Search'),
-                        "Status": "OSINT Found",
-                        "Offizielle_Firma": self.target_company,
-                        "Gefundene_Links": links,
-                        "Emails": emails,
-                        "URL": primary_url,
-                        "Details": details[:200] if details else "Found via OSINT search",
-                        "Real_Name": name
-                    })
-                    
-                    existing_names.add(name_lower)
-            
-            if osint_list:
-                st.caption(f"📋 Added {len(osint_list)} new OSINT-only entries with enriched links")
-                dfs_to_concat.append(pd.DataFrame(osint_list))
-        
-        if dfs_to_concat:
-            df_p_final = pd.concat(dfs_to_concat, ignore_index=True)
-            if 'Name' in df_p_final.columns:
-                df_p_final = df_p_final.drop_duplicates(subset=['Name'])
-            for col in ['Emails', 'Gefundene_Links', 'Real_Name']:
-                if col not in df_p_final.columns:
-                    df_p_final[col] = None if col != 'Gefundene_Links' else []
-        else:
-            df_p_final = pd.DataFrame()
+        df_p_final = self._combine_people_results(df_enriched_osint, df_github_pivoted)
 
         progress_bar.progress(100)
-        status_text.text("✅ Scan abgeschlossen!")
-        st.session_state['scan_status'] = "✅ Scan abgeschlossen!"
-        st.session_state['scan_progress'] = 100
-        st.session_state['is_scanning'] = False
-        
+        status_text.text("✅ Scan finished!")
+        st.session_state.update(
+            scan_status="✅ Scan finished!",
+            scan_progress=100,
+            is_scanning=False,
+        )
+
         if df_p_final.empty and df_code.empty:
-            st.warning("⚠️ Keine Daten gefunden.")
+            st.warning("⚠️ No data found.")
         else:
-            total_links = 0
-            total_emails = 0
-            if not df_p_final.empty:
-                total_links = df_p_final['Gefundene_Links'].apply(len).sum() if 'Gefundene_Links' in df_p_final else 0
-                total_emails = df_p_final['Emails'].apply(len).sum() if 'Emails' in df_p_final else 0
-            
-            st.success(f"✅ Scan abgeschlossen! Gefunden: {len(df_p_final)} Mitarbeiter, {len(df_code)} Repositories, {total_links} Links, {total_emails} Emails")
-        
+            total_links = (
+                df_p_final["Found_Links"].apply(len).sum()
+                if not df_p_final.empty and "Found_Links" in df_p_final
+                else 0
+            )
+            total_emails = (
+                df_p_final["Emails"].apply(len).sum()
+                if not df_p_final.empty and "Emails" in df_p_final
+                else 0
+            )
+            st.success(
+                f"✅ Scan finished! Found: {len(df_p_final)} Employees, "
+                f"{len(df_code)} Repositories, {total_links} Links, {total_emails} Emails"
+            )
+
         if is_cached:
-            st.info("📦 Hinweis: Einige Daten stammen aus dem Cache")
+            st.info("📦 Attention: Much of the data is from the Cache")
 
         if not is_cached and not df_code.empty:
-            self.cache_manager.save(self.cache_key, {
-                'people': df_p_final, 
-                'infra': infra_combined, 
-                'code': df_code,
-                'subdomains': subdomains, 
-                'enrichment': enrichment
-            })
+            self.cache_manager.save(
+                self.cache_key,
+                {
+                    "people": df_p_final,
+                    "infra": infra_combined,
+                    "code": df_code,
+                    "subdomains": subdomains,
+                    "enrichment": enrichment,
+                },
+            )
 
         st.markdown("---")
         st.subheader("🔐 Breach Detection")
-        
         with st.expander("Check emails for data breaches", expanded=False):
             st.info("Checking emails against Have I Been Pwned database...")
             breach_results = self.check_employee_breaches(df_p_final)
-            
             if breach_results:
-                st.session_state['breach_results'] = breach_results
+                st.session_state["breach_results"] = breach_results
 
-        return df_p_final, infra_combined, df_code, subdomains, enrichment, is_cached, safe_search, breach_results
+        return (
+            df_p_final, infra_combined, df_code,
+            subdomains, enrichment, is_cached, safe_search, breach_results,
+        )
+
 
     def _is_valid_url(self, url):
         if not url or not isinstance(url, str):
@@ -969,85 +1098,15 @@ class OSINTCollector:
         url = str(url).lower()
         return any(re.search(pattern, url) for pattern in url_patterns)
 
-    def _combine_people_results(self, df_osint, df_github):
-        all_people = []
-        
-        if not df_osint.empty:
-            for _, person in df_osint.iterrows():
-                links = []
-                
-                if 'URL' in person and pd.notna(person['URL']):
-                    links.append(str(person['URL']))
-                if 'url' in person and pd.notna(person['url']):
-                    links.append(str(person['url']))
-                if 'profile_url' in person and pd.notna(person['profile_url']):
-                    links.append(str(person['profile_url']))
-                if 'Link' in person and pd.notna(person['Link']):
-                    links.append(str(person['Link']))
-                
-                if 'Gefundene_Links' in person_dict:
-                    links = person_dict['Gefundene_Links']
-                    if isinstance(links, list):
-                        flat_links = []
-                        for link in links:
-                            if isinstance(link, list):
-                                flat_links.extend([str(l).strip().replace(' ', '').replace('\n', '') 
-                                                for l in link if l and str(l) not in flat_links])
-                            elif link and str(link) not in flat_links:
-                                clean_link = str(link).strip().replace(' ', '').replace('\n', '')
-                                flat_links.append(clean_link)
-                        person_dict['Gefundene_Links'] = flat_links
-                
-                person_dict = {
-                    "Name": person.get('Name', 'Unknown'),
-                    "Username": person.get('Username', 'N/A'),
-                    "Source": person.get('Source', 'OSINT Search'),
-                    "Status": person.get('Status', 'OSINT Found'),
-                    "Offizielle_Firma": person.get('Company', self.target_company),
-                    "Gefundene_Links": links,
-                    "URL": person.get('URL') or person.get('url') or (links[0] if links else None),
-                    "Details": person.get('Details', 'Found via OSINT search')
-                }
-                all_people.append(person_dict)
-        
-        if not df_github.empty:
-            existing_names = {p['Name'].lower() for p in all_people}
-            for _, person in df_github.iterrows():
-                person_dict = person.to_dict()
-                name_lower = person_dict.get('Name', '').lower()
-                
-                if name_lower and name_lower not in existing_names:
-                    if 'Gefundene_Links' in person_dict:
-                        links = person_dict['Gefundene_Links']
-                        if isinstance(links, list):
-                            flat_links = []
-                            for link in links:
-                                if isinstance(link, list):
-                                    flat_links.extend([str(l) for l in link if l and str(l) not in flat_links])
-                                elif link and str(link) not in flat_links:
-                                    flat_links.append(str(link))
-                            person_dict['Gefundene_Links'] = flat_links
-                    
-                    all_people.append(person_dict)
-                    existing_names.add(name_lower)
-        
-        for person in all_people:
-            if 'Gefundene_Links' not in person or not isinstance(person['Gefundene_Links'], list):
-                person['Gefundene_Links'] = []
-            
-            if not person.get('URL') and person.get('Gefundene_Links'):
-                person['URL'] = person['Gefundene_Links'][0]
-        
-        return pd.DataFrame(all_people) if all_people else pd.DataFrame()
 
 def main():
     st.sidebar.title("🛡️ TRUSTEQ OSINT")
-    target_company = st.sidebar.text_input("Firmenname", value="trusteq")
+    target_company = st.sidebar.text_input("Company Name", value="trusteq")
     target_domain = st.sidebar.text_input("Domain", value="trusteq.de")
     
     with st.sidebar.expander("🔑 API Keys"):
         github_token = st.text_input("GitHub Token", type="password", 
-                                    help="Von https://github.com/settings/tokens (repo + user scopes)")
+                                    help="From https://github.com/settings/tokens (repo + user scopes)")
         hibp_key = st.text_input("HIBP API Key (optional)", type="password",
                                 help="Leave empty to use web method")
         
@@ -1064,16 +1123,16 @@ def main():
                 st.error("❌ Could not test token")
 
     st.sidebar.markdown("---")
-    page = st.sidebar.radio("Navigation", ["Dashboard Übersicht", "Gefundene Mitarbeiter", "Code Leaks", "Breach Results"])
+    page = st.sidebar.radio("Navigation", ["Dashboard Summary", "Found Employees", "Code Leaks", "Breach Results"])
 
     collector = OSINTCollector(target_company, target_domain, github_token, hibp_key)
 
-    if st.sidebar.button("Live Scan Starten"):
+    if st.sidebar.button("Start Scan"):
         # Reset scan state
         st.session_state['is_scanning'] = False
         st.session_state['scan_results'] = None
         
-        with st.spinner(f"Scan runs (dauert 2-4 minutes)..."):
+        with st.spinner(f"Scan runs (takes 2-4 minutes)..."):
             df_p, infra, df_c, subs, enrich, is_cached, safe_search, breach_results = collector.run_full_scan()
             
             st.session_state['scan_results'] = {
@@ -1097,9 +1156,9 @@ def main():
 
     results = st.session_state.get('scan_results', None)
     
-    if page == "Dashboard Übersicht":
+    if page == "Dashboard Summary":
         render_dashboard(results, collector)
-    elif page == "Gefundene Mitarbeiter":
+    elif page == "Found Employees":
         render_people_page(results)
     elif page == "Code Leaks":
         render_code_page(results)
@@ -1113,7 +1172,7 @@ def render_dashboard(results, collector):
         st.markdown("---")
         
         progress = st.session_state.get('scan_progress', 0)
-        status = st.session_state.get('scan_status', "Initialisiere...")
+        status = st.session_state.get('scan_status', "Initializing...")
         
         st.progress(progress / 100)
         st.info(f"**Current Phase:** {status}")
@@ -1126,14 +1185,14 @@ def render_dashboard(results, collector):
     
     # If not scanning, show the dashboard as before
     if not results:
-        st.info("Bitte Scan starten.")
+        st.info("Please start a scan.")
         return
 
     if results.get('is_cached'):
-        st.warning(f"⚠️ **ACHTUNG:** API Rate Limit aktiv. Zeige Daten vom letzten erfolgreichen Scan ({results.get('timestamp')}).")
+        st.warning(f"⚠️ **ATTENTION:** API Rate Limit active. Showing data from the last successful scan ({results.get('timestamp')}).")
 
     st.title(f"🛡️ Surface Overview: {collector.target_company}")
-    st.markdown(f"**Domain:** {collector.target_domain} | **Letzter Scan:** {results.get('timestamp')}")
+    st.markdown(f"**Domain:** {collector.target_domain} | **Last Scan:** {results.get('timestamp')}")
     st.divider()
 
     risk_data = calculate_organization_risk(
@@ -1166,7 +1225,7 @@ def render_dashboard(results, collector):
                     ]}))
         st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.metric("Mitarbeiter", len(results['people']) if not results['people'].empty else 0)
+        st.metric("Employees", len(results['people']) if not results['people'].empty else 0)
         st.metric("Repos", len(results['code']) if not results['code'].empty else 0)
     with c3:
         st.subheader("Risk Breakdown")
@@ -1176,7 +1235,7 @@ def render_dashboard(results, collector):
 
     st.divider()
     if results['subdomains']:
-        st.subheader("⚠️ Kritische Subdomains")
+        st.subheader("⚠️ Critical Subdomains")
         for sub in results['subdomains']:
             st.error(f"{sub.get('Portal', 'Unknown')}")
 
@@ -1238,7 +1297,7 @@ def render_people_page(results):
             
             with st.expander(display_title):
                 st.write(f"**Status:** {person.get('Status', 'Unknown')}")
-                st.write(f"**Company:** {person.get('Offizielle_Firma', 'Unknown')}")
+                st.write(f"**Company:** {person.get('Official_Company', 'Unknown')}")
                 
                 if 'Details' in person and person['Details'] and pd.notna(person['Details']):
                     details = str(person['Details'])
@@ -1246,9 +1305,9 @@ def render_people_page(results):
                     details = details.replace(' @ ', '@').replace(' . ', '.')
                     st.info(details)
                 
-                links = person.get('Gefundene_Links', [])
+                links = person.get('Found_Links', [])
                 if links and len(links) > 0:
-                    st.write("**🔗 Gefundene Profile & Mentions:**")
+                    st.write("**🔗 Found Profiles & Mentions:**")
                     flat_links = []
                     for link in links:
                         if isinstance(link, list):
@@ -1288,7 +1347,7 @@ def render_code_page(results):
 
     if results and not results['code'].empty:
         if results.get('is_cached'):
-            st.warning("⚠️ Anzeige basiert auf Cache-Daten.")
+            st.warning("⚠️ Display based on cache data.")
         
         for _, repo in results['code'].iterrows():
             risk_score = repo.get('risk_score', 0)
@@ -1307,7 +1366,7 @@ def render_code_page(results):
                     st.markdown(f"[Inspect Repository]({repo_url})")
                 st.divider()
     else:
-        st.info("Keine Repositories gefunden.")
+        st.info("No repositories found.")
 
 def render_breach_page(results):
     st.subheader("Breach Results")
