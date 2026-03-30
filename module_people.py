@@ -23,50 +23,105 @@ class PeopleScanner:
         self.min_delay = 3  # Increased slightly for safety
         self.html_scraper = HTMLScraper(delay=1.5)
         self.discovered_people = []
-    # TODO Not usefull atm wrong calls? Wrong setup?
+
+    def _log(self, message: str):
+        print(message)
+
+
+    def search_duckduckgo(self, limit=10, query=None):
+        # Two modes:
+        #  • query=None  → company LinkedIn/XING search (original behaviour)
+        #  • query="..." → arbitrary search string (used by pivot & _enrich_and_pivot)
+        results = []
+        try:
+            with DDGS() as ddgs:
+                if query:
+                    ddgs_gen = ddgs.text(query, max_results=limit)
+                    for r in ddgs_gen:
+                        results.append({
+                            "Name": self._extract_name_from_title(r.get("title", "")),
+                            "URL": r.get("href", ""),
+                            "Snippet": r.get("body", ""),
+                            "Engine": "DuckDuckGo",
+                            "Source": "Pivot",
+                            "Link": r.get("href", ""),   # keep both keys for callers
+                        })
+                else:
+                    linkedin_query = f'site:linkedin.com/in/ "{self.company}"'
+                    ddgs_gen = ddgs.text(linkedin_query, max_results=limit)
+                    for r in ddgs_gen:
+                        results.append({
+                            "Name": self._extract_name_from_title(r.get("title", "")),
+                            "URL": r.get("href", ""),
+                            "Snippet": r.get("body", ""),
+                            "Engine": "DuckDuckGo",
+                            "Source": "LinkedIn",
+                        })
+
+                    # Only top-up with XING if we still need more results
+                    remaining = limit - len(results)
+                    if remaining > 0:
+                        xing_query = f'site:xing.com/profile/ "{self.company}"'
+                        xing_gen = ddgs.text(xing_query, max_results=remaining)
+                        for x in xing_gen:
+                            results.append({
+                                "Name": self._extract_name_from_title(x.get("title", "")),
+                                "URL": x.get("href", ""),
+                                "Snippet": x.get("body", ""),
+                                "Engine": "DuckDuckGo",
+                                "Source": "XING",
+                            })
+        except Exception as e:
+            print(f"  ⚠️ DuckDuckGo Error: {e}")
+
+        return results
+    
     def perform_pivot_scans(self, discovered_people, limit_per_pivot=3):
+        # For each person, run two DuckDuckGo queries:
+        #  1. "Real Name Company"
+        #  2. "Username Company"
+
         pivot_results = []
-        # Process only unique entities to save time
         seen_queries = set()
 
         for person in discovered_people:
-            name = person.get('Name')
-            username = person.get('Username')
-            
-            # Pattern 1: "Real Name" "Company"
+            name = person.get("Name")
+            username = person.get("Username")
+
             if name and name != "Unknown":
-                query = f'"{name}" "{self.company}"'
+                query = f'{name} {self.company}'
                 if query not in seen_queries:
-                    print(f"🔄 Pivoting: {query}")
-                    pivot_results.extend(self.search_duckduckgo(query=query, limit=limit_per_pivot))
+                    print(f"🔄 Pivoting on name: {query}")
+                    hits = self.search_duckduckgo(query=query, limit=limit_per_pivot)
+                    pivot_results.extend(hits)
                     seen_queries.add(query)
 
-            # Pattern 2: "Username" "Company"
-            if username and username != "Unknown":
-                query = f'"{username}" "{self.company}"'
+            if username and username not in ("Unknown", "N/A", ""):
+                query = f'{username} {self.company}'
                 if query not in seen_queries:
-                    print(f"🔄 Pivoting: {query}")
-                    pivot_results.extend(self.search_duckduckgo(query=query, limit=limit_per_pivot))
+                    print(f"🔄 Pivoting on username: {query}")
+                    hits = self.search_duckduckgo(query=query, limit=limit_per_pivot)
+                    pivot_results.extend(hits)
                     seen_queries.add(query)
-        
+
         return pivot_results
     
     def _request_with_backoff(self, url, params=None):
         max_retries = 3
         backoff_factor = 2
-        
+
         for attempt in range(max_retries):
             try:
-                # Rate limit before every request
                 now = time.time()
-                if now - self.last_request < self.min_delay:
-                    time.sleep(self.min_delay - (now - self.last_request))
-                
+                elapsed = now - self.last_request
+                if elapsed < self.min_delay:
+                    time.sleep(self.min_delay - elapsed)
+
                 response = self.session.get(
-                    url, 
-                    params=params, 
-                    headers=self._get_headers(), 
-                    timeout=15
+                    url,
+                    params=params,
+                    headers=self._get_headers(),
+                    timeout=15,          # ← always 15 s; was incorrectly passed as kwarg
                 )
                 self.last_request = time.time()
 
@@ -75,11 +130,12 @@ class PeopleScanner:
                     print(f"  ⚠️ Rate Limit (429) on {url}. Waiting {wait:.1f}s...")
                     time.sleep(wait)
                     continue
-                
+
                 return response
             except Exception as e:
                 print(f"  ❌ Request error: {e}")
                 return None
+
         return None
 
     def _get_headers(self):
@@ -96,45 +152,44 @@ class PeopleScanner:
         all_results = []
         
         # 1. DuckDuckGo
-        print("🔍 Suche via DuckDuckGo...")
+        print("🔍 Searching via DuckDuckGo...")
         ddg_res = self.search_duckduckgo(limit)
         all_results.extend(ddg_res)
-        print(f"  ✓ DuckDuckGo: {len(ddg_res)} Ergebnisse")
+        print(f"  ✓ DuckDuckGo: {len(ddg_res)} results")
 
         # 2. Bing 
         if len(all_results) < limit:
-            print("🔍 Suche via Bing...")
+            print("🔍 Searching via Bing...")
             bing_res = self.search_bing(limit - len(all_results))
             all_results.extend(bing_res)
-            print(f"  ✓ Bing: {len(bing_res)} Ergebnisse")
+            print(f"  ✓ Bing: {len(bing_res)} results")
 
         # 3. Startpage 
         if len(all_results) < limit:
-            print("🔍 Suche via Startpage...")
+            print("🔍 Searching via Startpage...")
             startpage_res = self.search_startpage(limit - len(all_results))
             all_results.extend(startpage_res)
-            print(f"  ✓ Startpage: {len(startpage_res)} Ergebnisse")
+            print(f"  ✓ Startpage: {len(startpage_res)} results")
 
         # 4. Yahoo
         if len(all_results) < limit:
-            print("🔍 Suche via Yahoo...")
+            print("🔍 Searching via Yahoo...")
             yahoo_res = self.search_yahoo(limit - len(all_results))
             all_results.extend(yahoo_res)
-            print(f"  ✓ Yahoo: {len(yahoo_res)} Ergebnisse")
+            print(f"  ✓ Yahoo: {len(yahoo_res)} results")
 
         # 5. Google Dorking 
         if len(all_results) < 10:
-            print("🔍 Suche via Google Dorking (langsam)...")
+            print("🔍 Searching via Google Dorking (slow)...")
             google_res = self.search_google_dork(5)
             all_results.extend(google_res)
-            print(f"  ✓ Google Dork: {len(google_res)} Ergebnisse")
+            print(f"  ✓ Google Dork: {len(google_res)} results")
 
         if not all_results:
             return pd.DataFrame()
         
         # Deduplicate and clean
-        df = pd.DataFrame(all_results)
-        df = df.drop_duplicates(subset=['URL'])
+        df = pd.DataFrame(all_results).drop_duplicates(subset=["URL"])
         self.discovered_people = []
 
         # Extract usernames from LinkedIn URLs
@@ -145,126 +200,153 @@ class PeopleScanner:
         if 'Name' in df.columns:
             df['Name'] = df['Name'].apply(self._clean_name)
         
-        print(f"\n✅ Gesamt: {len(df)} einzigartige Personen gefunden")
+        print(f"\n✅ Total: {len(df)} unique people found")
         
         print("🔍 Scraping profile pages for additional information...")
         
         enriched_data = []
-        
         for idx, row in df.iterrows():
-            url = row.get('URL')
-            # Preserve the username/original name as a backup
-            username_fallback = row.get('Name', 'Unknown') 
-            
+            url = row.get("URL")
+            username_fallback = row.get("Name", "Unknown")
+
             if url and pd.notna(url):
-                # Check global cache before scraping
                 should_scrape = True
-                if hasattr(self, 'scraped_urls_global') and url in self.scraped_urls_global:
-                    self._log(f"  ⏭️ Skipping {url} (already scraped globally)")
+                if hasattr(self, "scraped_urls_global") and url in self.scraped_urls_global:
                     should_scrape = False
-                
+
                 if should_scrape:
-                    # Add to global cache
-                    if hasattr(self, 'scraped_urls_global'):
+                    if hasattr(self, "scraped_urls_global"):
                         self.scraped_urls_global.add(url)
-                    
-                    # Perform the scrape
                     scraped = self.html_scraper.scrape(url, target_company=self.company)
                 else:
-                    # Create a minimal scraped dict with just the URL
-                    scraped = {'real_name': None, 'emails': [], 'social_links': [], 'company': None, 'people_found': []}
-                
-                # If we found a real name, use it as the primary identity
-                if scraped.get('real_name'):
-                    # Check if it's actually different from the username
-                    found_name = scraped['real_name']
-                    row['Real_Name'] = found_name
-                    row['Name'] = found_name # This updates the display name
-                    row['Username'] = username_fallback # Keep the old name as the username handle
+                    scraped = {
+                        "real_name": None,
+                        "emails": [],
+                        "social_links": [],
+                        "company": None,
+                        "people_found": [],
+                    }
+                if scraped and scraped.get("real_name"):
+                    row["Real_Name"] = scraped["real_name"]
+                    row["Name"] = scraped["real_name"]
+                    row["Username"] = username_fallback
                 else:
-                    row['Real_Name'] = None
-                    row['Username'] = username_fallback
+                    # Try to derive a display name from the URL slug
+                    derived = self._slug_to_name(url)
+                    row["Real_Name"] = derived if derived != "Unknown" else None
+                    row["Name"] = derived
+                    row["Username"] = username_fallback
 
-                row['Emails'] = scraped.get('emails', [])
-                row['Gefundene_Links'] = list(set([url] + scraped.get('social_links', [])))
+                row["Emails"] = scraped.get("emails", []) if scraped else []
+                row["Found_Links"] = list(
+                    set([url] + (scraped.get("social_links", []) if scraped else []))
+                )
 
-                # Handle Company
-                if scraped.get('company'):
-                    row['Offizielle_Firma'] = scraped['company']
-                
-                # Store newly discovered people for secondary scanning
-                if scraped.get('people_found'):
-                    for person in scraped['people_found']:
-                        # Add to discovered people for later processing
+                if scraped and scraped.get("company"):
+                    row["Offizielle_Firma"] = scraped["company"]
+
+                if scraped and scraped.get("people_found"):
+                    for person in scraped["people_found"]:
                         if person not in self.discovered_people:
                             self.discovered_people.append(person)
-                        
-                        # Also add their URL to current person's links if not already there
-                        if person.get('url') and person['url'] not in row['Gefundene_Links']:
-                            row['Gefundene_Links'].append(person['url'])
-                            self._log(f"Added discovered person's URL to links: {person['url']}")
+                        if person.get("url") and person["url"] not in row["Found_Links"]:
+                            row["Found_Links"].append(person["url"])
             else:
-                # Even if there's no URL or it's invalid, keep a placeholder
-                row['Username'] = username_fallback
-                row['Name'] = username_fallback
-            
+                row["Username"] = username_fallback
+                row["Name"] = username_fallback
+
             enriched_data.append(row)
-        
-        # Create final DataFrame
+
         df_enriched = pd.DataFrame(enriched_data)
-        
-        # Add discovered people to the result (they'll be processed separately)
+
         if self.discovered_people:
             print(f"\n✅ Discovered {len(self.discovered_people)} additional people from pages")
-        
-        # Ensure all expected columns exist
-        for col in ['Name', 'URL', 'Snippet', 'Quelle', 'Source', 'Username', 'Scraped_Name', 'Scraped_Social_Links']:
+
+        for col in [
+            "Name", "URL", "Snippet", "Engine", "Source", "Username",
+            "Scraped_Name", "Scraped_Social_Links",
+        ]:
             if col not in df_enriched.columns:
                 df_enriched[col] = None
-        
-        print(f"\n✅ Enriched data: {len(df_enriched)} profiles with {df_enriched['Scraped_Name'].notna().sum()} real names found")
-        
+
+        real_names_found = df_enriched["Name"].apply(
+            lambda n: bool(n) and n != "Unknown" and " " in str(n)
+        ).sum()
+        print(
+            f"\n✅ Enriched data: {len(df_enriched)} profiles "
+            f"with {real_names_found} real names found"
+        )
+
         return df_enriched
 
-    def search_duckduckgo(self, limit):
-        results = []
+    def _slug_to_name(self, url: str) -> str:
+        if not url or not isinstance(url, str):
+            return "Unknown"
+
+        # Extract slug from LinkedIn or XING URL
+        slug = None
+        for pattern in [
+            r"linkedin\.com/in/([^/?#&]+)",
+            r"xing\.com/profile/([^/?#&]+)",
+        ]:
+            m = re.search(pattern, url, re.IGNORECASE)
+            if m:
+                slug = m.group(1)
+                break
+
+        if not slug:
+            return "Unknown"
+
+        # URL-decode (e.g. %C3%BC → ü)
         try:
-            with DDGS() as ddgs:
-                # Search for LinkedIn profiles
-                ddgs_gen = ddgs.text(
-                    f'site:linkedin.com/in/ "{self.company}"', 
-                    max_results=limit
-                )
-                for r in ddgs_gen:
-                    title = r.get('title', '')
-                    name = self._extract_name_from_title(title)
-                    
-                    results.append({
-                        "Name": name,
-                        "URL": r.get('href', ''),
-                        "Snippet": r.get('body', ''),
-                        "Quelle": "DuckDuckGo",
-                        "Source": "LinkedIn"
-                    })
-                    
-                    # Also search for XING profiles 
-                    if len(results) < limit:
-                        xing_gen = ddgs.text(
-                            f'site:xing.com/profile/ "{self.company}"',
-                            max_results=limit - len(results)
-                        )
-                        for x in xing_gen:
-                            results.append({
-                                "Name": self._extract_name_from_title(x.get('title', '')),
-                                "URL": x.get('href', ''),
-                                "Snippet": x.get('body', ''),
-                                "Quelle": "DuckDuckGo",
-                                "Source": "XING"
-                            })
-        except Exception as e:
-            print(f"  ⚠️ DuckDuckGo Fehler: {e}")
-        
-        return results
+            from urllib.parse import unquote
+            slug = unquote(slug)
+        except Exception:
+            pass
+
+        # Strip trailing tracking / query params LinkedIn sometimes leaves
+        slug = slug.split("?")[0].rstrip("/")
+
+        # Strip trailing numeric hash (e.g. -a82889101, -1a2253126, -219389228)
+        slug = re.sub(r"-[a-f0-9]{6,}$", "", slug, flags=re.IGNORECASE)
+        slug = re.sub(r"-\d{5,}$", "", slug)
+
+        # Split on hyphens first
+        parts = [p for p in slug.split("-") if p]
+
+        if len(parts) == 1:
+            # Single run-together slug — no hyphens 
+            # We can't reliably split arbitrary German compound names,
+            # so just title-case the whole thing as a single token.
+            word = parts[0]
+            # Capitalise on lowercase→uppercase transitions (camelCase guard)
+            display = re.sub(r"([a-z])([A-Z])", r"\1 \2", word).title()
+            return display if len(display) > 2 else "Unknown"
+
+        # Multi-part slug: remove company keyword parts and pure-numeric parts
+        company_lower = self.company.lower()
+        filtered = []
+        for part in parts:
+            part_lower = part.lower()
+            # Drop the company name itself if it snuck into the slug
+            if part_lower == company_lower:
+                continue
+            # Drop pure numbers
+            if re.fullmatch(r"\d+", part):
+                continue
+            # Drop very short connector tokens that aren't initials
+            if len(part) == 1 and not part.isupper():
+                continue
+            filtered.append(part.capitalize())
+
+        if not filtered:
+            return "Unknown"
+
+        # LinkedIn often appends the job title or employer after the actual name;
+        # heuristically keep only the first 2–3 tokens as the "name" portion
+        # unless they're all very short (initials + surname).
+        name_tokens = filtered[:3] if len(filtered) > 3 else filtered
+        return " ".join(name_tokens)
 
     def search_bing(self, limit):
         results = []
@@ -277,11 +359,7 @@ class PeopleScanner:
         }
         
         try:
-            response = self._request_with_backoff(
-                'https://www.bing.com/search',
-                params=params,
-                timeout=10
-            )
+            response = self._request_with_backoff("https://www.bing.com/search", params=params)
             
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -302,11 +380,11 @@ class PeopleScanner:
                             "Name": self._extract_name_from_title(title),
                             "URL": url,
                             "Snippet": snippet,
-                            "Quelle": "Bing",
+                            "Engine": "Bing",
                             "Source": "LinkedIn"
                         })
         except Exception as e:
-            print(f"  ⚠️ Bing Fehler: {e}")
+            print(f"  ⚠️ Bing error: {e}")
         
         return results
 
@@ -343,11 +421,11 @@ class PeopleScanner:
                             "Name": self._extract_name_from_title(title),
                             "URL": url,
                             "Snippet": "",
-                            "Quelle": "Startpage",
+                            "Engine": "Startpage",
                             "Source": "LinkedIn"
                         })
         except Exception as e:
-            print(f"  ⚠️ Startpage Fehler: {e}")
+            print(f"  ⚠️ Startpage error: {e}")
         
         return results
 
@@ -384,11 +462,11 @@ class PeopleScanner:
                             "Name": self._extract_name_from_title(title),
                             "URL": link,
                             "Snippet": description,
-                            "Quelle": "Yahoo",
+                            "Engine": "Yahoo",
                             "Source": "LinkedIn"
                         })
         except Exception as e:
-            print(f"  ⚠️ Yahoo Fehler: {e}")
+            print(f"  ⚠️ Yahoo error: {e}")
         
         return results
 
@@ -433,13 +511,13 @@ class PeopleScanner:
                                 "Name": self._extract_name_from_title(title),
                                 "URL": actual_url,
                                 "Snippet": "",
-                                "Quelle": "Google Dork",
+                                "Engine": "Google Dork",
                                 "Source": "LinkedIn"
                             })
                     
                     time.sleep(2)  # Be gentle with Google
         except Exception as e:
-            print(f"  ⚠️ Google Dorking Fehler: {e}")
+            print(f"  ⚠️ Google Dorking error: {e}")
         
         return results
 

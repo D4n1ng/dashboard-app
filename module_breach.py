@@ -67,7 +67,7 @@ class BreachChecker:
             return self._check_email_web(email)
     
     def _check_email_api(self, email):
-        print(f"Prüfe Leak-Status für {email} via API...")
+        print(f"Check leak status for {email} via API...")
         url = f"{self.base_url}/breachedaccount/{email}?truncateResponse=false"
         
         try:
@@ -84,7 +84,7 @@ class BreachChecker:
             elif response.status_code == 404:
                 return {"status": "safe", "count": 0, "method": "api"}
             elif response.status_code == 429:
-                print("⚠️ Rate Limit erreicht. Warte 2 Sekunden...")
+                print("⚠️ Rate Limit reached. Wait 2 seconds...")
                 time.sleep(2)
                 return self._check_email_api(email)
             else:
@@ -93,7 +93,7 @@ class BreachChecker:
             return {"status": "error", "message": str(e), "method": "api"}
     
     def _check_email_web(self, email):
-        print(f"🔍 Prüfe Leak-Status für {email} via Web-Methode...")
+        print(f"🔍 Check leak status for {email} via web method...")
         
         try:
             found, data = self.check_hibp_no_api(email)

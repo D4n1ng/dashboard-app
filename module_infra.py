@@ -33,6 +33,7 @@ class InfraScanner:
                     data = json.loads(raw_data)
                     inner = data[0]
                     # TODO only speculation check via different urls for potentially more detailed info on what is unsafe
+                    # TODO currently always 429
                     # Format: ["sb.ssr", status_code, is_malware, is_phishing, has_unsafe, ...]
                     # has_unsafe (index 4): true if any unsafe content detected
                     status_code = inner[1]
@@ -88,12 +89,12 @@ class InfraScanner:
                 tech_found.append({"Software": "React Frontend", "Risk": "Low"})
 
         except Exception as e:
-            print(f"Web-Header Scan fehlgeschlagen: {e}")
+            print(f"Web-Header Scan failed: {e}")
         
         return tech_found
 
     def analyze_dns_txt(self):
-        print(f"Analysiere DNS Records für {self.domain}...")
+        print(f"Analyzing DNS Records for {self.domain}...")
         found_software = []
         
         try:
@@ -111,7 +112,7 @@ class InfraScanner:
                     found_software.append({"Software": "SPF Mail Security", "Risk": "Low"})
 
         except Exception as e:
-            print(f"DNS Fehler: {e}")
+            print(f"DNS Error: {e}")
             
         return found_software
 
@@ -140,7 +141,7 @@ class InfraScanner:
 class CompanyEnricher:
     def get_details(self, domain):
         company_name = domain.split('.')[0].title()
-        description = "Keine Beschreibung gefunden."
+        description = "No description found."
         
         try:
             with DDGS() as ddgs:
@@ -155,6 +156,6 @@ class CompanyEnricher:
         return {
             "name": company_name,
             "description": description,
-            "employees": "Schätzung via OSINT",
+            "employees": "Estimation via OSINT",
             "linkedin": f"https://www.linkedin.com/company/{company_name.lower()}"
         }
