@@ -1,4 +1,3 @@
-# html_scraper.py
 import html
 import requests
 import re
@@ -158,9 +157,10 @@ class HTMLScraper:
             return match.group(1).strip()
         return None
 
-    # TODO many users dont get properly analyzed f.e. Torsten Klein appears in console prints but not in the final results and is not on the Mitarbeiter page
     # TODO some users lose their surname and then are only further processed with the first name which then leads to no results and also no further processing of found accounts cause of the skipping of already processed names - maybe we should not skip already processed names but only urls or add a check if the name is already in the results and if not do not skip it
-    # specialized method for GitHub 
+    # specialized method for GitHub .
+    # TODO usernames/real names get written defectfly like florianlennartweiß in one go or still using username instead of real name mostly for linkedin account with custom url
+    # TODO: still some accounts not belonging to employees (many clemens accs and the leanix account (due to Lea Ferstl presumably))
     def extract_github_profile_data(self, html: str, username: str) -> Dict:
         soup = BeautifulSoup(html, 'html.parser')
         data = {'real_name': None, 'emails': [], 'social_links': [], 'company': None}
@@ -415,8 +415,6 @@ class HTMLScraper:
             'company': None,
             'people_found': []
         }
-        # TODO check if this works properly now and does not throw away found accounts cause of the skipping
-        # Special handling for LinkedIn - ALWAYS process, even without HTML
         if 'linkedin.com' in url.lower():
             result['social_links'] = [url]
             username = self._extract_username_from_linkedin_url(url)

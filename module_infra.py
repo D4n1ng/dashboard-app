@@ -33,7 +33,7 @@ class InfraScanner:
                     data = json.loads(raw_data)
                     inner = data[0]
                     # TODO only speculation check via different urls for potentially more detailed info on what is unsafe
-                    # TODO currently always 429
+                    # TODO Sometimes 429 (might not be fixable)
                     # Format: ["sb.ssr", status_code, is_malware, is_phishing, has_unsafe, ...]
                     # has_unsafe (index 4): true if any unsafe content detected
                     status_code = inner[1]
