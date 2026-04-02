@@ -864,6 +864,13 @@ class OSINTCollector:
                 name = person.get('Name', '')
                 if name:
                     social_hits = self.social_scanner.search_entity_globally(name, self.target_company)
+                    social_profile_urls = self.social_scanner.search_social_profiles(
+                        name, self.target_company
+                    )
+                    for url in social_profile_urls:
+                        if url not in entity['scraped_social_links']:
+                            entity['scraped_social_links'].append(url)
+                            print(f"  📱 Added social profile: {url}")
                     for hit in social_hits:
                         social_entity = {'name': name}
                         
@@ -1065,15 +1072,34 @@ class OSINTCollector:
 
         st.markdown("---")
         st.subheader("🔐 Breach Detection")
+
+        breach_results = {}
+        generated_breach_results = {}
+
         with st.expander("Check emails for data breaches", expanded=False):
-            st.info("Checking emails against Have I Been Pwned database...")
+
+            st.markdown("**Scraped emails**")
+            st.info("Checking discovered emails against Have I Been Pwned...")
             breach_results = self.check_employee_breaches(df_p_final)
             if breach_results:
-                st.session_state["breach_results"] = breach_results
+                st.session_state['breach_results'] = breach_results
+
+            st.markdown("---")
+            st.markdown("**Generated corporate emails** (`firstname.lastname@domain`)")
+
+            generated_breach_results = self.breach_checker.generate_and_check_emails(
+                df_people=df_p_final,
+                domain=self.target_domain,
+                use_api_if_available=bool(self.breach_checker.api_key),
+                streamlit_ui=st,
+            )
+            if generated_breach_results:
+                st.session_state['generated_breach_results'] = generated_breach_results
 
         return (
             df_p_final, infra_combined, df_code,
-            subdomains, enrichment, is_cached, safe_search, breach_results,
+            subdomains, enrichment, is_cached,
+            safe_search, breach_results, generated_breach_results,
         )
 
 
@@ -1133,18 +1159,19 @@ def main():
         st.session_state['scan_results'] = None
         
         with st.spinner(f"Scan runs (takes 2-4 minutes)..."):
-            df_p, infra, df_c, subs, enrich, is_cached, safe_search, breach_results = collector.run_full_scan()
+            df_p, infra, df_c, subs, enrich, is_cached, safe_search, breach_results, generated_breach_results = collector.run_full_scan()
             
             st.session_state['scan_results'] = {
-                'people': df_p if not df_p.empty else pd.DataFrame(), 
-                'infra': infra, 
-                'code': df_c, 
-                'subdomains': subs, 
-                'enrichment': enrich,
-                'timestamp': datetime.now().strftime('%H:%M:%S'),
-                'safe_search': safe_search,
-                'is_cached': is_cached,
-                'breach_results': breach_results
+                'people':                   df_p if not df_p.empty else pd.DataFrame(),
+                'infra':                    infra,
+                'code':                     df_c,
+                'subdomains':               subs,
+                'enrichment':               enrich,
+                'timestamp':                datetime.now().strftime('%H:%M:%S'),
+                'safe_search':              safe_search,
+                'is_cached':                is_cached,
+                'breach_results':           breach_results,
+                'generated_breach_results': generated_breach_results,
             }
             
             if is_cached:
@@ -1369,29 +1396,79 @@ def render_code_page(results):
         st.info("No repositories found.")
 
 def render_breach_page(results):
-    st.subheader("Breach Results")
-    
-    breach_results = results.get('breach_results', {}) if results else {}
+    st.subheader("🔐 Breach Results")
 
-    if not breach_results:
-        st.info("No breach data available. Run a scan with breach checking enabled.")
+    if st.session_state.get('is_scanning', False):
+        st.info("🔄 Scan running... breach results will appear after completion.")
         return
-    
-    st.warning(f"⚠️ Found {len(breach_results)} compromised email(s)!")
-    
-    for email, data in breach_results.items():
-        with st.expander(f"📧 {email} - {data['person']}"):
-            st.write(f"**Person:** {data['person']}")
-            st.write(f"**Email:** {email}")
-            st.write(f"**Number of Breaches:** {data['count']}")
-            st.write(f"**Detection Method:** {data['method']}")
-            
-            if data['breaches']:
-                st.write("**Breaches:**")
-                for breach in data['breaches']:
-                    st.write(f"- {breach}")
-            
-            st.markdown(f"[🔍 View on Have I Been Pwned](https://haveibeenpwned.com/account/{email})")
+
+    if not results:
+        st.info("No breach data available. Run a scan first.")
+        return
+
+    tab_scraped, tab_generated = st.tabs(
+        ["📥 Scraped emails", "🔮 Generated (firstname.lastname)"]
+    )
+
+    # Scraped emails 
+    with tab_scraped:
+        breach_results = results.get('breach_results', {})
+        if not breach_results:
+            st.info("No scraped email breach data. Run a scan with breach checking enabled.")
+        else:
+            st.warning(f"⚠️ {len(breach_results)} compromised scraped email(s) found!")
+            for email, data in breach_results.items():
+                with st.expander(f"📧 {email} — {data['person']}"):
+                    st.write(f"**Person:** {data['person']}")
+                    st.write(f"**Breaches:** {data['count']}")
+                    st.write(f"**Method:** {data['method']}")
+                    if data.get('breaches'):
+                        for breach in data['breaches']:
+                            st.write(f"- {breach}")
+                    st.markdown(
+                        f"[🔍 View on HIBP](https://haveibeenpwned.com/account/{email})"
+                    )
+
+    # Generated emails 
+    with tab_generated:
+        gen_results = results.get('generated_breach_results', {})
+        if not gen_results:
+            st.info("No generated email results yet. Run a scan to check guessed addresses.")
+            return
+
+        leaked = {e: d for e, d in gen_results.items() if d['status'] == 'leaked'}
+        safe   = {e: d for e, d in gen_results.items() if d['status'] == 'safe'}
+        errors = {e: d for e, d in gen_results.items() if d['status'] == 'error'}
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🔴 Breached", len(leaked))
+        col2.metric("✅ Clean",    len(safe))
+        col3.metric("❓ Errors",   len(errors))
+
+        if leaked:
+            st.markdown("### 🔴 Breached")
+            for email, data in leaked.items():
+                with st.expander(f"📧 {email} — {data['person']}"):
+                    st.write(f"**Person:** {data['person']}")
+                    st.write(f"**Breaches:** {data['count']}")
+                    st.write(f"**Method:** {data['method']}")
+                    if data.get('details'):
+                        st.write("**Found in:**")
+                        for breach in data['details']:
+                            st.write(f"  - {breach}")
+                    st.markdown(
+                        f"[🔍 Check on HIBP](https://haveibeenpwned.com/account/{email})"
+                    )
+
+        if safe:
+            with st.expander(f"✅ Clean ({len(safe)})"):
+                for email, data in safe.items():
+                    st.caption(f"✅ {email} — {data['person']}")
+
+        if errors:
+            with st.expander(f"❓ Errors ({len(errors)})"):
+                for email, data in errors.items():
+                    st.caption(f"❓ {email} — {data.get('details', 'unknown error')}")
 
 if __name__ == "__main__":
     main()
