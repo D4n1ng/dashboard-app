@@ -18,8 +18,8 @@ _SOCIAL_PLATFORMS = [
         re.compile(r'facebook\.com/(?!pages/|groups/|events/|watch/|marketplace/)([^/?#\s]+)', re.I),
     ),
     (
-        "Twitter/X",
-        "twitter OR x.com",
+        "Twitter",
+        "X",
         re.compile(r'(?:twitter\.com|x\.com)/(?!search|hashtag|i/|home|explore)([^/?#\s]+)', re.I),
     ),
     (
@@ -139,7 +139,7 @@ class SocialScanner:
         found_urls: List[str] = []
 
         for platform_name, search_suffix, url_pattern in _SOCIAL_PLATFORMS:
-            query = f'"{entity_name}" "{target_company}" {search_suffix}'
+            query = f'{entity_name} {target_company} {search_suffix}'
             print(f"  🔍 Social search [{platform_name}]: {query}")
 
             try:

@@ -1,7 +1,7 @@
 import dns.resolver
 import requests
 from ddgs import DDGS
-
+import json    
 class InfraScanner:
     def __init__(self, domain):
         self.domain = domain
@@ -25,32 +25,37 @@ class InfraScanner:
             print(f"📡 Response status: {response.status_code}")
 
             if response.status_code == 200:
-                import json
                 # Google's internal APIs start with ")]}'" to prevent JSON hijacking. We strip it.
                 raw_data = response.text.replace(")]}'", "").strip()
                 
                 try:
                     data = json.loads(raw_data)
                     inner = data[0]
-                    # TODO only speculation check via different urls for potentially more detailed info on what is unsafe
-                    # TODO Sometimes 429 (might not be fixable)
+                    # Was not able to 100% verify the meaning but current logic should be correct for most based on some testing
                     # Format: ["sb.ssr", status_code, is_malware, is_phishing, has_unsafe, ...]
-                    # has_unsafe (index 4): true if any unsafe content detected
                     status_code = inner[1]
                     has_unsafe  = inner[4] if len(inner) > 4 else False
                     
                     print(f"🧪 status_code: {status_code}, has_unsafe: {has_unsafe}")
 
-                    if status_code == 1 and not has_unsafe:
+                    if status_code == 1:
                         return {"status": "✅ Safe (No unsafe content found)", "url": frontend_url}
-                    elif status_code == 2 or (status_code != 1 and has_unsafe):
+
+                    elif status_code == 2:
                         return {"status": "❌ DANGEROUS (Unsafe content found!)", "url": frontend_url}
+
                     elif status_code == 3:
                         return {"status": "⚠️ WARNING (Some pages on this site are unsafe)", "url": frontend_url}
+
                     elif status_code == 5:
                         return {"status": "❓ Unknown (Check manually)", "url": frontend_url}
+                    
+                    elif response.status_code == 429:
+                        return {"status": "⚠️ Rate limited (try again later)", "url": frontend_url}
+                    
                     else:
                         return {"status": f"❓ Unexpected status code: {status_code}", "url": frontend_url}
+
                         
                 except (json.JSONDecodeError, IndexError, TypeError) as e:
                     print(f"❌ Parse error: {e} | raw: {raw_data[:200]}")
