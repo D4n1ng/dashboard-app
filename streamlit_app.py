@@ -1357,65 +1357,83 @@ def main():
                     st.error("❌ Token invalid!")
             except:
                 st.error("❌ Could not test token")
-
-    st.sidebar.markdown("---")
     
     st.markdown("""
-<style>
-    /* Always-visible toggle button */
-    .sidebar-toggle {
-        position: fixed;
-        left: 0;
-        top: 50%;
-        transform: translateY(-50%);
-        background: #00c9ff;
-        color: #07101e;
-        width: 28px;
-        height: 60px;
-        border-radius: 0 8px 8px 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        z-index: 999999;
-        font-size: 16px;
-        font-weight: bold;
-        text-decoration: none;
-        transition: all 0.2s;
-    }
-    .sidebar-toggle:hover {
-        background: #0a85c2;
-        width: 32px;
-    }
-</style>
-
-<a href="javascript:void(0)" class="sidebar-toggle" onclick="toggleSidebar()">▶</a>
-
-<script>
-    function toggleSidebar() {
-        const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
-        if (collapseBtn) {
-            collapseBtn.click();
+    <style>
+        /* Floating reopen button - hidden by default */
+        #sidebar-reopen-btn {
+            position: fixed;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            background: #00c9ff;
+            color: #07101e;
+            border: none;
+            border-radius: 0 8px 8px 0;
+            padding: 12px 8px;
+            cursor: pointer;
+            z-index: 999999;
+            font-size: 18px;
+            font-weight: bold;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+            transition: all 0.2s ease;
+            display: none;
         }
-        // Update button direction
-        const btn = document.querySelector('.sidebar-toggle');
-        setTimeout(() => {
-            const isCollapsed = collapseBtn && collapseBtn.getAttribute('aria-expanded') === 'false';
-            btn.innerHTML = isCollapsed ? '▶' : '◀';
-        }, 200);
-    }
+        #sidebar-reopen-btn:hover {
+            background: #0a85c2;
+            padding-left: 12px;
+        }
+    </style>
     
-    // Update button direction on load
-    setTimeout(() => {
-        const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
-        const btn = document.querySelector('.sidebar-toggle');
-        if (collapseBtn && btn) {
-            const isCollapsed = collapseBtn.getAttribute('aria-expanded') === 'false';
-            btn.innerHTML = isCollapsed ? '▶' : '◀';
+    <div id="sidebar-reopen-btn" onclick="reopenSidebar()">▶</div>
+    
+    <script>
+        function reopenSidebar() {
+            // Try multiple methods to reopen the sidebar
+            // Method 1: Click the collapse button if it exists
+            const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+            if (collapseBtn && collapseBtn.getAttribute('aria-expanded') === 'false') {
+                collapseBtn.click();
+            }
+            // Method 2: Remove the collapsed class from sidebar
+            const sidebar = document.querySelector('section[data-testid="stSidebar"]');
+            if (sidebar) {
+                sidebar.style.transform = 'translateX(0px)';
+                sidebar.style.width = '330px';
+            }
+            // Method 3: Force rerun with session state
+            fetch(window.location.href + '?force_sidebar=1');
+            
+            // Hide the button after reopening
+            document.getElementById('sidebar-reopen-btn').style.display = 'none';
+            
+            // Reload the page to ensure Streamlit state syncs
+            setTimeout(() => { location.reload(); }, 100);
         }
-    }, 500);
-</script>
-""", unsafe_allow_html=True)    
+        
+        // Monitor sidebar state and show button when hidden
+        function checkSidebarState() {
+            const sidebar = document.querySelector('section[data-testid="stSidebar"]');
+            const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+            
+            if (sidebar) {
+                const isHidden = sidebar.style.transform === 'translateX(-100%)' || 
+                                (collapseBtn && collapseBtn.getAttribute('aria-expanded') === 'false');
+                
+                if (isHidden) {
+                    document.getElementById('sidebar-reopen-btn').style.display = 'block';
+                } else {
+                    document.getElementById('sidebar-reopen-btn').style.display = 'none';
+                }
+            }
+        }
+        
+        // Check every second
+        setInterval(checkSidebarState, 1000);
+        // Also check on load
+        setTimeout(checkSidebarState, 500);
+    </script>
+    """, unsafe_allow_html=True) 
     
     # Scan state management 
     if 'is_scanning' not in st.session_state:
