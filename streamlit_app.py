@@ -1320,7 +1320,6 @@ class OSINTCollector:
 
 def main():
     st.sidebar.title("🛡️ TRUSTEQ OSINT")
-    
     target_company = st.sidebar.text_input("Company Name", value="trusteq")
     target_domain = st.sidebar.text_input("Domain", value="trusteq.de")
     
