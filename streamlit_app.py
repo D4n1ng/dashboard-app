@@ -294,6 +294,23 @@ section[data-testid="stSidebar"] {
         color: #00c9ff !important;
         text-decoration: underline;
     }
+    button[data-testid="baseButton-headerNoPadding"],
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="collapsedControl"],
+    button[kind="header"] {
+        display: none !important;
+    }
+    
+    section[data-testid="stSidebar"] {
+        transform: translateX(0px) !important;
+        width: 330px !important;
+        transition: none !important;
+        min-width: 330px !important;
+    }
+    
+    .stApp {
+        transition: none !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 class AsyncRateLimiter:
