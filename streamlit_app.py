@@ -105,6 +105,197 @@ def _merge_person_dicts(base: dict, extra: dict) -> dict:
 
 # Start of renderinga and code functions in classes
 st.set_page_config(page_title="TRUSTEQ SE-Platform", page_icon="🛡️", layout="wide")
+
+# Custom dark theme CSS 
+st.markdown("""
+<style>
+.stApp {
+    background-color: #07101e;
+    color: #cde4f5;
+}
+
+header, footer {
+    visibility: hidden;
+}
+
+h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+    color: #cde4f5 !important;
+}
+
+hr {
+    border-color: #132237;
+}
+
+div[data-testid="stVerticalBlock"] > div[style*="flex-flow: column"] {
+    background: #0b1829;
+    border: 1px solid #132237;
+    border-radius: 7px;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+
+div[data-testid="stMetric"] {
+    background: #060e1a;
+    border: 1px solid #0f1e2e;
+    border-radius: 6px;
+    padding: 8px 12px;
+}
+
+div[data-testid="stMetric"] label {
+    color: #3a6880 !important;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+    color: #cde4f5 !important;
+    font-size: 20px !important;
+    font-weight: 500 !important;
+}
+
+div[data-testid="stProgress"] > div {
+    background-color: #0a1520 !important;
+    border-radius: 4px !important;
+    overflow: hidden;
+}
+
+div[data-testid="stProgress"] > div > div {
+    background-color: #0a85c2 !important;
+    border-radius: 4px !important;
+    transition: width 0.3s ease;
+}
+
+div[data-testid="stProgress"] div[role="progressbar"] {
+    background-color: #00c9ff !important;
+}
+
+div[data-testid="stProgress"] p {
+    color: #07101e !important;
+    font-weight: 500 !important;
+}
+
+.stProgress {
+    margin-bottom: 0;
+}
+
+.streamlit-expanderHeader {
+    background-color: #060e1a;
+    border: 1px solid #0f1e2e;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #cde4f5;
+}
+
+.streamlit-expanderContent {
+    background-color: #060e1a;
+    border-left: 1px solid #0f1e2e;
+    border-right: 1px solid #0f1e2e;
+    border-bottom: 1px solid #0f1e2e;
+    border-radius: 0 0 5px 5px;
+    padding: 10px;
+}
+
+.stAlert {
+    background-color: #001428 !important;
+    border: 1px solid #005a70 !important;
+    border-radius: 7px !important;
+    padding: 12px !important;
+    color: #cde4f5 !important;
+}
+
+.stAlert .stMarkdown, 
+.stAlert p {
+    color: #cde4f5 !important;
+}
+
+.stAlert[data-baseweb="notification"] {
+    background-color: #001428 !important;
+    border-color: #005a70 !important;
+}
+
+.stAlert[data-testid="stAlert"]:has(.stAlertWarning) {
+    background-color: #1a0d00 !important;
+    border-color: #804400 !important;
+}
+
+.stAlert[data-testid="stAlert"]:has(.stAlertError) {
+    background-color: #200505 !important;
+    border-color: #660000 !important;
+}
+
+.stAlert[data-testid="stAlert"]:has(.stAlertSuccess) {
+    background-color: #003d1e !important;
+    border-color: #006630 !important;
+}
+
+.stButton button {
+    background-color: #001428 !important;
+    border: 1px solid #004455 !important;
+    color: #00c9ff !important;
+}
+
+.stButton button:hover {
+    border-color: #00c9ff !important;
+    color: #00c9ff !important;
+}
+
+section[data-testid="stSidebar"] {
+    background-color: #080f1c;
+    border-right: 1px solid #132237;
+}
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    background-color: #060e1a;
+    border: 1px solid #0f1e2e;
+    border-radius: 5px;
+    padding: 5px 12px;
+    color: #3a6880;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: #001428 !important;
+    border-color: #005a70 !important;
+    color: #00c9ff !important;
+}
+    div[data-testid="stProgress"] div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stProgress"] .stMarkdown p,
+    div[data-testid="stProgress"] p {
+        color: #cde4f5 !important;  
+        font-weight: 500 !important;
+    }
+    
+    div[data-testid="stProgress"] label,
+    div[data-testid="stProgress"] span {
+        color: #cde4f5 !important;
+    }
+    a[href^="mailto:"] {
+        color: #cde4f5 !important;  /* Same as your main text color */
+        text-decoration: none !important;
+        font-weight: 500 !important;
+    }
+    
+    a[href^="mailto:"]:hover {
+        color: #00c9ff !important;  /* Cyan on hover - matches your brand */
+        text-decoration: underline !important;
+    }
+    
+    .bit a {
+        color: #cde4f5 !important;
+        text-decoration: none;
+    }
+    
+    .bit a:hover {
+        color: #00c9ff !important;
+        text-decoration: underline;
+    }
+</style>
+""", unsafe_allow_html=True)
 class AsyncRateLimiter:
     def __init__(self, max_calls: int, period: float):
         self.max_calls = max_calls
@@ -460,11 +651,12 @@ class OSINTCollector:
         st.info(f"🔍 Checking {len(all_emails)} unique emails for breaches...")
         
         breach_results = {}
-        progress_bar = st.progress(0, text="Checking emails for breaches...")
-        
+        status_placeholder = st.empty()
+        progress_bar = st.progress(0)   
+
         for i, email in enumerate(all_emails[:10]):
-            progress_bar.progress((i + 1) / min(len(all_emails), 10), 
-                                text=f"Checking {email}...")
+            status_placeholder.info(f"🔍 Checking: {email}")
+            progress_bar.progress((i + 1) / min(len(all_emails), 10))
             
             result = self.breach_checker.check_email(email, use_api_if_available=False)
             
@@ -482,7 +674,8 @@ class OSINTCollector:
                 st.error(f"❌ Error checking {email}: {result.get('message', result.get('details', 'Unknown error'))}")
             
             time.sleep(1.5)
-        
+
+        status_placeholder.empty()
         progress_bar.empty()
         
         if breach_results:
@@ -1149,40 +1342,60 @@ def main():
                 st.error("❌ Could not test token")
 
     st.sidebar.markdown("---")
-    page = st.sidebar.radio("Navigation", ["Dashboard Summary", "Found Employees", "Code Leaks", "Breach Results"])
+    
+    # Scan state management 
+    if 'is_scanning' not in st.session_state:
+        st.session_state.is_scanning = False
+    if 'scan_results' not in st.session_state:
+        st.session_state.scan_results = None
 
+    # Navigation radio – disabled while scanning
+    page = st.sidebar.radio(
+        "Navigation",
+        ["Dashboard Summary", "Found Employees", "Code Leaks", "Breach Results"],
+        disabled=st.session_state.is_scanning
+    )
+    
     collector = OSINTCollector(target_company, target_domain, github_token, hibp_key)
 
-    if st.sidebar.button("Start Scan"):
-        # Reset scan state
-        st.session_state['is_scanning'] = False
-        st.session_state['scan_results'] = None
-        
-        with st.spinner(f"Scan runs (takes 2-4 minutes)..."):
-            df_p, infra, df_c, subs, enrich, is_cached, safe_search, breach_results, generated_breach_results = collector.run_full_scan()
-            
-            st.session_state['scan_results'] = {
-                'people':                   df_p if not df_p.empty else pd.DataFrame(),
-                'infra':                    infra,
-                'code':                     df_c,
-                'subdomains':               subs,
-                'enrichment':               enrich,
-                'timestamp':                datetime.now().strftime('%H:%M:%S'),
-                'safe_search':              safe_search,
-                'is_cached':                is_cached,
-                'breach_results':           breach_results,
-                'generated_breach_results': generated_breach_results,
-            }
-            
-            if is_cached:
-                st.sidebar.warning("⚠️ Showing cached data")
-            else:
-                st.sidebar.success("✅ Scan complete!")
-            
-            st.rerun()
+    # Start button – disabled while scanning
+    if st.sidebar.button("Start Scan", disabled=st.session_state.is_scanning):
+        st.session_state.is_scanning = True
+        st.session_state.scan_results = None
+        st.rerun()  # First rerun to disable UI
 
-    results = st.session_state.get('scan_results', None)
-    
+    # If scanning flag is True, actually run the scan (but only once)
+    if st.session_state.is_scanning and st.session_state.scan_results is None:
+        # Clear old logs
+        if 'scan_output' in st.session_state:
+            st.session_state.scan_output = []
+        # Run the blocking scan
+        df_p, infra, df_c, subs, enrich, is_cached, safe_search, breach_results, generated_breach_results = collector.run_full_scan()
+        
+        st.session_state.scan_results = {
+            'people':                   df_p if not df_p.empty else pd.DataFrame(),
+            'infra':                    infra,
+            'code':                     df_c,
+            'subdomains':               subs,
+            'enrichment':               enrich,
+            'timestamp':                datetime.now().strftime('%H:%M:%S'),
+            'safe_search':              safe_search,
+            'is_cached':                is_cached,
+            'breach_results':           breach_results,
+            'generated_breach_results': generated_breach_results,
+        }
+        st.session_state.is_scanning = False
+        st.rerun()  # Final rerun to show results and re‑enable UI
+
+    # Show live progress in sidebar (only updated after reruns, but inline progress inside scan works)
+    if st.session_state.is_scanning:
+        st.sidebar.info("🔄 Scan in progress...")
+        progress = st.session_state.get('scan_progress', 0)
+        st.sidebar.progress(progress / 100)
+        st.sidebar.caption(st.session_state.get('scan_status', 'Initializing...'))
+
+    # Render the current page
+    results = st.session_state.scan_results
     if page == "Dashboard Summary":
         render_dashboard(results, collector)
     elif page == "Found Employees":
@@ -1193,24 +1406,15 @@ def main():
         render_breach_page(results)
 
 def render_dashboard(results, collector):
-    # Check if a scan is running
     if st.session_state.get('is_scanning', False):
         st.markdown("### 📊 Live Scan Progress")
-        st.markdown("---")
-        
         progress = st.session_state.get('scan_progress', 0)
         status = st.session_state.get('scan_status', "Initializing...")
-        
         st.progress(progress / 100)
         st.info(f"**Current Phase:** {status}")
-        st.markdown("---")
-        st.info("Scan runs in the background. ")
-        
-        time.sleep(2)
-        st.rerun()
+        st.info("Scan runs in the background.")
         return
-    
-    # If not scanning, show the dashboard as before
+
     if not results:
         st.info("Please start a scan.")
         return
@@ -1223,56 +1427,69 @@ def render_dashboard(results, collector):
     st.divider()
 
     risk_data = calculate_organization_risk(
-        infra_data=results['infra'],
-        subdomains=results['subdomains'],
-        code_df=results['code'],
-        people_df=results['people']
+        infra_data=results["infra"],
+        subdomains=results["subdomains"],
+        code_df=results["code"],
+        people_df=results["people"],
+        safe_search=results.get("safe_search", {}),
+        breach_results=results.get("breach_results", {}),
+        generated_breach_results=results.get("generated_breach_results", {}),
     )
-    
     avg_risk = risk_data['score']
     risk_label = risk_data['label']
-    
-    gauge_color = "green"
-    if risk_label == "CRITICAL": gauge_color = "darkred"
-    elif risk_label == "HIGH": gauge_color = "red"
-    elif risk_label == "MEDIUM": gauge_color = "orange"
-    
-    c1, c2, c3 = st.columns([2, 1, 1])
-    with c1:
+    infra_risk = risk_data['breakdown']['Infrastructure']
+    code_risk  = risk_data['breakdown']['Code']
+    people_risk= risk_data['breakdown']['People']
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        gauge_color = "green"
+        if risk_label == "CRITICAL": gauge_color = "darkred"
+        elif risk_label == "HIGH": gauge_color = "red"
+        elif risk_label == "MEDIUM": gauge_color = "orange"
         fig = go.Figure(go.Indicator(
-            mode="gauge+number+delta", 
-            value=avg_risk, 
+            mode="gauge+number+delta",
+            value=avg_risk,
             title={'text': f"Risk Score: {risk_label}"},
-            gauge={'axis': {'range': [0, 100]}, 'bar': {'color': gauge_color},
-                   'steps': [
-                       {'range': [0, 25], 'color': "lightgreen"}, 
-                       {'range': [25, 50], 'color': "lightyellow"},
-                       {'range': [50, 75], 'color': "lightsalmon"},
-                       {'range': [75, 100], 'color': "salmon"}
-                    ]}))
+            gauge={
+                'axis': {'range': [0, 100]},
+                'bar': {'color': gauge_color},
+                'steps': [
+                    {'range': [0, 25], 'color': "lightgreen"},
+                    {'range': [25, 50], 'color': "lightyellow"},
+                    {'range': [50, 75], 'color': "lightsalmon"},
+                    {'range': [75, 100], 'color': "salmon"}
+                ]
+            }
+        ))
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#cde4f5"))
         st.plotly_chart(fig, use_container_width=True)
-    with c2:
+    with col2:
         st.metric("Employees", len(results['people']) if not results['people'].empty else 0)
-        st.metric("Repos", len(results['code']) if not results['code'].empty else 0)
-    with c3:
+        st.metric("Repositories", len(results['code']) if not results['code'].empty else 0)
+    with col3:
         st.subheader("Risk Breakdown")
-        st.caption(f"Infrastructure: {risk_data['breakdown']['Infrastructure']}/100")
-        st.caption(f"Code/GitHub: {risk_data['breakdown']['Code']}/100")
-        st.caption(f"People OSINT: {risk_data['breakdown']['People']}/100")
+        st.caption(f"Infrastructure: {infra_risk}/100")
+        st.caption(f"Code/GitHub: {code_risk}/100")
+        st.caption(f"People OSINT: {people_risk}/100")
 
     st.divider()
+    st.subheader("Risk Breakdown Details")
+    for label, score in [("Infrastructure", infra_risk), ("Code / GitHub", code_risk), ("People OSINT", people_risk)]:
+        st.write(f"**{label}**")
+        st.progress(score / 100)
+
     if results['subdomains']:
+        st.divider()
         st.subheader("⚠️ Critical Subdomains")
         for sub in results['subdomains']:
             st.error(f"{sub.get('Portal', 'Unknown')}")
 
     st.divider()
     st.subheader("🔍 Google Safe Browsing")
-
     safe = results.get('safe_search', {})
     status_text = safe.get('status', 'Not checked')
     report_url = safe.get('url', '')
-
     if '✅' in status_text:
         st.success(status_text)
     elif '❌' in status_text:
@@ -1281,194 +1498,154 @@ def render_dashboard(results, collector):
         st.warning(status_text)
     else:
         st.info(status_text)
-
     if report_url:
         st.markdown(f"[🔗 View full Google Transparency Report]({report_url})")
 
 def render_people_page(results):
-    st.subheader("👥 Discovered Identities")
-    
     if st.session_state.get('is_scanning', False):
-        st.info("🔄 Scan runs currently... The results will be displayed after completion.")
+        st.info("🔄 Scan running... Results will appear after completion.")
         return
-    
+
     if not results or results.get('people', pd.DataFrame()).empty:
         st.info("No employee data available. Start a scan to discover identities.")
         return
-    
-    if results and not results['people'].empty:
-        for _, person in results['people'].iterrows():
-            username = person.get('Username')
-            if pd.isna(username) or username is None:
-                username = "unknown"
-            else:
-                username = str(username)
-            
-            name = person.get('Name')
-            if pd.isna(name) or name is None:
-                name = "Unknown"
-            else:
-                name = str(name)
-            
-            source = person.get('Source')
-            if pd.isna(source) or source is None:
-                source = "OSINT"
-            else:
-                source = str(source)
-            
-            display_title = f"👤 {name}"
-            if username and username != "unknown":
-                display_title += f" (@{username})"
-            if source:
-                display_title += f" - {source}"
-            
-            with st.expander(display_title):
-                st.write(f"**Status:** {person.get('Status', 'Unknown')}")
-                st.write(f"**Company:** {person.get('Official_Company', 'Unknown')}")
-                
-                if 'Details' in person and person['Details'] and pd.notna(person['Details']):
-                    details = str(person['Details'])
-                    details = re.sub(r'\s+', ' ', details)
-                    details = details.replace(' @ ', '@').replace(' . ', '.')
-                    st.info(details)
-                
-                links = person.get('Found_Links', [])
-                if links and len(links) > 0:
-                    st.write("**🔗 Found Profiles & Mentions:**")
-                    flat_links = []
-                    for link in links:
-                        if isinstance(link, list):
-                            flat_links.extend([str(l) for l in link if l and str(l) not in flat_links])
-                        elif link and str(link) not in flat_links:
-                            flat_links.append(str(link))
-                    
-                    for link in flat_links:
-                        if link and isinstance(link, str):
-                            clean_link = link.strip().replace(' ', '').replace('\n', '')
+
+    df = results['people']
+    total = len(df)
+    li_cnt = df['Source'].str.contains('LinkedIn', case=False, na=False).sum() if 'Source' in df.columns else 0
+    gh_cnt = df['Source'].str.contains('GitHub', case=False, na=False).sum() if 'Source' in df.columns else 0
+    xi_cnt = df['Source'].str.contains('XING', case=False, na=False).sum() if 'Source' in df.columns else 0
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Identified", total)
+    col2.metric("LinkedIn", li_cnt)
+    col3.metric("GitHub", gh_cnt)
+    col4.metric("XING", xi_cnt)
+
+    st.subheader("Discovered Employees")
+    for _, person in df.iterrows():
+        name = person.get('Name', 'Unknown')
+        username = person.get('Username', '')
+        source = person.get('Source', 'OSINT')
+        details = person.get('Details', '')
+        links = person.get('Found_Links', [])
+        with st.expander(f"👤 {name} (@{username}) - {source}"):
+            st.write(f"**Status:** {person.get('Status', 'Unknown')}")
+            st.write(f"**Company:** {person.get('Official_Company', 'Unknown')}")
+            if details:
+                st.info(details)
+            if links:
+                st.write("**🔗 Found Profiles & Mentions:**")
+                for link in links:
+                    if isinstance(link, str) and link.strip():
+                        clean_link = link.strip().replace(' ', '').replace('\n', '')
+                        if 'linkedin.com' in clean_link.lower():
+                            icon = "💼"
+                        elif 'github.com' in clean_link.lower():
+                            icon = "🐙"
+                        else:
                             icon = "🔗"
-                            link_lower = clean_link.lower()
-                            if 'linkedin.com' in link_lower:
-                                icon = "💼"
-                            elif 'twitter.com' in link_lower or 'x.com' in link_lower:
-                                icon = "🐦"
-                            elif 'github.com' in link_lower:
-                                icon = "🐙"
-                            st.write(f"- {icon} [{clean_link}]({clean_link})")
-                
-                profile_url = person.get('URL') or person.get('Profile_URL')
-                if profile_url and pd.notna(profile_url):
-                    st.markdown(f"--- \n [🔍 View Primary Profile]({str(profile_url)})")
-    else:
-        st.info("No employee data available. Start a scan to discover identities.")
+                        st.write(f"- {icon} [{clean_link}]({clean_link})")
+            profile_url = person.get('URL')
+            if profile_url and pd.notna(profile_url):
+                st.markdown(f"---\n[🔍 View Primary Profile]({profile_url})")
 
 def render_code_page(results):
-    st.subheader("💻 Critical Code Repositories")
-    
     if st.session_state.get('is_scanning', False):
-        st.info("🔄 Scan runs currently... The results will be displayed after completion.")
-        return
-    
-    if not results or results.get('code', pd.DataFrame()).empty:
-        st.info("No repositories available. Start a scan to discover code leaks.")
+        st.info("🔄 Scan running... Results will appear after completion.")
         return
 
-    if results and not results['code'].empty:
-        if results.get('is_cached'):
-            st.warning("⚠️ Display based on cache data.")
-        
-        for _, repo in results['code'].iterrows():
-            risk_score = repo.get('risk_score', 0)
-            
-            with st.container():
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f" 📂 {repo.get('repo_name', 'Unknown')}")
-                    st.caption(f"URL: {repo.get('url', 'N/A')}")
-                with col2:
-                    st.metric("Risk Score", f"{risk_score}/100")
-                
-                st.progress(min(risk_score / 100, 1.0))
-                repo_url = repo.get('url')
-                if repo_url:
-                    st.markdown(f"[Inspect Repository]({repo_url})")
-                st.divider()
-    else:
-        st.info("No repositories found.")
+    if not results or results.get('code', pd.DataFrame()).empty:
+        st.info("No repositories found. Start a scan.")
+        return
+
+    df = results['code']
+    repo_count = len(df)
+    high_risk = df[df['risk_score'] >= 50].shape[0] if 'risk_score' in df.columns else 0
+    contributors = df['repo_name'].nunique()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Repositories", repo_count)
+    col2.metric("High Risk", high_risk)
+    col3.metric("Contributors", contributors)
+    col4.metric("Secrets Found", 0)
+
+    st.subheader("GitHub Repositories — sorted by risk score")
+    df_sorted = df.sort_values('risk_score', ascending=False) if 'risk_score' in df.columns else df
+    for _, repo in df_sorted.iterrows():
+        risk = repo.get('risk_score', 0)
+        name = repo.get('repo_name', 'Unknown')
+        url = repo.get('url', '#')
+        desc = repo.get('description', '')
+        with st.container():
+            cols = st.columns([3, 1])
+            cols[0].markdown(f"**{name}**")
+            cols[0].caption(desc)
+            cols[1].metric("Risk Score", f"{risk}/100")
+            st.progress(min(risk / 100, 1.0))
+            st.markdown(f"[Inspect Repository]({url})")
+            st.divider()
 
 def render_breach_page(results):
-    st.subheader("🔐 Breach Results")
-
     if st.session_state.get('is_scanning', False):
-        st.info("🔄 Scan running... breach results will appear after completion.")
+        st.info("🔄 Scan running... Results will appear after completion.")
         return
 
     if not results:
         st.info("No breach data available. Run a scan first.")
         return
 
-    tab_scraped, tab_generated = st.tabs(
-        ["📥 Scraped emails", "🔮 Generated (firstname.lastname)"]
-    )
+    gen_results = results.get('generated_breach_results', {})
+    scraped_results = results.get('breach_results', {})
 
-    # Scraped emails 
-    with tab_scraped:
-        breach_results = results.get('breach_results', {})
-        if not breach_results:
-            st.info("No scraped email breach data. Run a scan with breach checking enabled.")
+    tab1, tab2 = st.tabs(["📥 Scraped emails", "🔮 Generated emails"])
+
+    with tab1:
+        if not scraped_results:
+            st.info("No scraped email breach data.")
         else:
-            st.warning(f"⚠️ {len(breach_results)} compromised scraped email(s) found!")
-            for email, data in breach_results.items():
+            st.warning(f"⚠️ {len(scraped_results)} compromised scraped email(s) found!")
+            for email, data in scraped_results.items():
                 with st.expander(f"📧 {email} — {data['person']}"):
                     st.write(f"**Person:** {data['person']}")
                     st.write(f"**Breaches:** {data['count']}")
                     st.write(f"**Method:** {data['method']}")
                     if data.get('breaches'):
+                        st.write("**Details:**")
                         for breach in data['breaches']:
                             st.write(f"- {breach}")
-                    st.markdown(
-                        f"[🔍 View on HIBP](https://haveibeenpwned.com/account/{email})"
-                    )
+                    st.markdown(f"[🔍 View on HIBP](https://haveibeenpwned.com/account/{email})")
 
-    # Generated emails 
-    with tab_generated:
-        gen_results = results.get('generated_breach_results', {})
+    with tab2:
         if not gen_results:
-            st.info("No generated email results yet. Run a scan to check guessed addresses.")
-            return
-
-        leaked = {e: d for e, d in gen_results.items() if d['status'] == 'leaked'}
-        safe   = {e: d for e, d in gen_results.items() if d['status'] == 'safe'}
-        errors = {e: d for e, d in gen_results.items() if d['status'] == 'error'}
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🔴 Breached", len(leaked))
-        col2.metric("✅ Clean",    len(safe))
-        col3.metric("❓ Errors",   len(errors))
-
-        if leaked:
-            st.markdown("### 🔴 Breached")
-            for email, data in leaked.items():
-                with st.expander(f"📧 {email} — {data['person']}"):
-                    st.write(f"**Person:** {data['person']}")
-                    st.write(f"**Breaches:** {data['count']}")
-                    st.write(f"**Method:** {data['method']}")
-                    if data.get('details'):
-                        st.write("**Found in:**")
-                        for breach in data['details']:
-                            st.write(f"  - {breach}")
-                    st.markdown(
-                        f"[🔍 Check on HIBP](https://haveibeenpwned.com/account/{email})"
-                    )
-
-        if safe:
-            with st.expander(f"✅ Clean ({len(safe)})"):
-                for email, data in safe.items():
-                    st.caption(f"✅ {email} — {data['person']}")
-
-        if errors:
-            with st.expander(f"❓ Errors ({len(errors)})"):
-                for email, data in errors.items():
-                    st.caption(f"❓ {email} — {data.get('details', 'unknown error')}")
+            st.info("No generated email results yet.")
+        else:
+            leaked = {e: d for e, d in gen_results.items() if d['status'] == 'leaked'}
+            safe   = {e: d for e, d in gen_results.items() if d['status'] == 'safe'}
+            errors = {e: d for e, d in gen_results.items() if d['status'] == 'error'}
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🔴 Breached", len(leaked))
+            col2.metric("✅ Clean", len(safe))
+            col3.metric("❓ Errors", len(errors))
+            if leaked:
+                st.markdown("### 🔴 Breached")
+                for email, data in leaked.items():
+                    with st.expander(f"📧 {email} — {data['person']}"):
+                        st.write(f"**Person:** {data['person']}")
+                        st.write(f"**Breaches:** {data['count']}")
+                        st.write(f"**Method:** {data['method']}")
+                        if data.get('details'):
+                            st.write("**Found in:**")
+                            for breach in data['details']:
+                                st.write(f"- {breach}")
+                        st.markdown(f"[🔍 Check on HIBP](https://haveibeenpwned.com/account/{email})")
+            if safe:
+                with st.expander(f"✅ Clean ({len(safe)})"):
+                    for email, data in safe.items():
+                        st.caption(f"✅ {email} — {data['person']}")
+            if errors:
+                with st.expander(f"❓ Errors ({len(errors)})"):
+                    for email, data in errors.items():
+                        st.caption(f"❓ {email} — {data.get('details', 'unknown error')}")
 
 if __name__ == "__main__":
     main()
