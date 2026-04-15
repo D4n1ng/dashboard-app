@@ -1321,11 +1321,6 @@ class OSINTCollector:
 def main():
     st.sidebar.title("🛡️ TRUSTEQ OSINT")
     
-    with st.sidebar:
-        if st.button("☰ Toggle Sidebar", help="Click to expand/collapse"):
-            # This forces a rerun and resets the sidebar state
-            pass
-    
     target_company = st.sidebar.text_input("Company Name", value="trusteq")
     target_domain = st.sidebar.text_input("Domain", value="trusteq.de")
     
