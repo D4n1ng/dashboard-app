@@ -1359,6 +1359,77 @@ def main():
                 st.error("❌ Could not test token")
 
     st.sidebar.markdown("---")
+
+    st.markdown("""
+<style>
+    /* Always-visible toggle button */
+    .sidebar-toggle {
+        position: fixed;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        background: #00c9ff;
+        color: #07101e;
+        width: 30px;
+        height: 70px;
+        border-radius: 0 8px 8px 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        z-index: 999999;
+        font-size: 18px;
+        font-weight: bold;
+        transition: all 0.2s;
+        border: none;
+        box-shadow: 2px 0 5px rgba(0,0,0,0.2);
+    }
+    .sidebar-toggle:hover {
+        background: #0a85c2;
+        width: 36px;
+    }
+</style>
+
+<div class="sidebar-toggle" id="sidebarToggle">▶</div>
+
+<script>
+    (function() {
+        function toggleSidebar() {
+            // Find the sidebar collapse button
+            const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+            if (collapseBtn) {
+                // Click the native Streamlit collapse button
+                collapseBtn.click();
+                
+                // Update the toggle button arrow direction after animation
+                setTimeout(function() {
+                    const isCollapsed = collapseBtn.getAttribute('aria-expanded') === 'false';
+                    const toggleBtn = document.getElementById('sidebarToggle');
+                    if (toggleBtn) {
+                        toggleBtn.innerHTML = isCollapsed ? '▶' : '◀';
+                    }
+                }, 300);
+            }
+        }
+        
+        // Attach click event
+        const toggleBtn = document.getElementById('sidebarToggle');
+        if (toggleBtn) {
+            toggleBtn.onclick = toggleSidebar;
+        }
+        
+        // Update arrow direction on page load
+        setTimeout(function() {
+            const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+            const toggleBtn = document.getElementById('sidebarToggle');
+            if (collapseBtn && toggleBtn) {
+                const isCollapsed = collapseBtn.getAttribute('aria-expanded') === 'false';
+                toggleBtn.innerHTML = isCollapsed ? '▶' : '◀';
+            }
+        }, 500);
+    })();
+</script>
+""", unsafe_allow_html=True)
     
     # Scan state management 
     if 'is_scanning' not in st.session_state:
