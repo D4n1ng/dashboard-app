@@ -1360,6 +1360,63 @@ def main():
 
     st.sidebar.markdown("---")
     
+    st.markdown("""
+<style>
+    /* Always-visible toggle button */
+    .sidebar-toggle {
+        position: fixed;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        background: #00c9ff;
+        color: #07101e;
+        width: 28px;
+        height: 60px;
+        border-radius: 0 8px 8px 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        z-index: 999999;
+        font-size: 16px;
+        font-weight: bold;
+        text-decoration: none;
+        transition: all 0.2s;
+    }
+    .sidebar-toggle:hover {
+        background: #0a85c2;
+        width: 32px;
+    }
+</style>
+
+<a href="javascript:void(0)" class="sidebar-toggle" onclick="toggleSidebar()">▶</a>
+
+<script>
+    function toggleSidebar() {
+        const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+        if (collapseBtn) {
+            collapseBtn.click();
+        }
+        // Update button direction
+        const btn = document.querySelector('.sidebar-toggle');
+        setTimeout(() => {
+            const isCollapsed = collapseBtn && collapseBtn.getAttribute('aria-expanded') === 'false';
+            btn.innerHTML = isCollapsed ? '▶' : '◀';
+        }, 200);
+    }
+    
+    // Update button direction on load
+    setTimeout(() => {
+        const collapseBtn = document.querySelector('button[data-testid="baseButton-headerNoPadding"]');
+        const btn = document.querySelector('.sidebar-toggle');
+        if (collapseBtn && btn) {
+            const isCollapsed = collapseBtn.getAttribute('aria-expanded') === 'false';
+            btn.innerHTML = isCollapsed ? '▶' : '◀';
+        }
+    }, 500);
+</script>
+""", unsafe_allow_html=True)    
+    
     # Scan state management 
     if 'is_scanning' not in st.session_state:
         st.session_state.is_scanning = False
