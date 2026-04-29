@@ -4,6 +4,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import json
+import hashlib
+import difflib
 import os
 import sqlite3
 from datetime import datetime
@@ -37,6 +39,7 @@ _PROFILE_URL_PATTERNS = re.compile(
     r"x\.com/[^/]+/?$",
     re.IGNORECASE,
 )
+
 def _normalize_name(name: str) -> str:
     if not name or pd.isna(name):
         return ""
@@ -49,6 +52,7 @@ def _normalize_name(name: str) -> str:
     name = re.sub(r"[^a-zäöüßáéíóúàèìòùâêîôûãñ\s]", "", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name
+
 def _is_profile_url(url: str) -> bool:
     if not url or not isinstance(url, str):
         return False
@@ -56,6 +60,7 @@ def _is_profile_url(url: str) -> bool:
     if _JUNK_URL_PATTERNS.search(url):
         return False
     return bool(_PROFILE_URL_PATTERNS.search(url))
+
 def _flatten_links(raw_links) -> List[str]:
     flat = []
     if not raw_links:
@@ -72,6 +77,7 @@ def _flatten_links(raw_links) -> List[str]:
             if s and s not in flat:
                 flat.append(s)
     return flat
+
 def _merge_person_dicts(base: dict, extra: dict) -> dict:
     # Merge Found_Links
     base_links = _flatten_links(base.get("Found_Links", []))
@@ -103,7 +109,7 @@ def _merge_person_dicts(base: dict, extra: dict) -> dict:
 
     return base
 
-# Start of renderinga and code functions in classes
+# Start of rendering and code functions in classes
 st.set_page_config(page_title="TRUSTEQ SE-Platform", page_icon="🛡️", layout="wide")
 
 # Custom dark theme CSS 
@@ -275,13 +281,13 @@ section[data-testid="stSidebar"] {
         color: #cde4f5 !important;
     }
     a[href^="mailto:"] {
-        color: #cde4f5 !important;  /* Same as your main text color */
+        color: #cde4f5 !important;
         text-decoration: none !important;
         font-weight: 500 !important;
     }
     
     a[href^="mailto:"]:hover {
-        color: #00c9ff !important;  /* Cyan on hover - matches your brand */
+        color: #00c9ff !important;
         text-decoration: underline !important;
     }
     
@@ -313,6 +319,7 @@ section[data-testid="stSidebar"] {
     }
 </style>
 """, unsafe_allow_html=True)
+
 class AsyncRateLimiter:
     def __init__(self, max_calls: int, period: float):
         self.max_calls = max_calls
@@ -380,14 +387,224 @@ class CacheManager:
             }
         return None
 
-    def _load_file(self):
-        if not os.path.exists(self.db_name):
-            return {}
-        try:
-            with open(self.db_name, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
+
+class EnhancedDeduplicator:
+    def __init__(self, db_path="person_cache.db"):
+        self.db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS persons (
+                    person_id TEXT PRIMARY KEY,
+                    canonical_name TEXT,
+                    emails TEXT,
+                    linkedin_url TEXT,
+                    github_url TEXT,
+                    first_seen TEXT,
+                    last_seen TEXT,
+                    metadata TEXT
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS name_aliases (
+                    alias_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_id TEXT,
+                    alias_name TEXT,
+                    source TEXT,
+                    FOREIGN KEY (person_id) REFERENCES persons(person_id)
+                )
+            ''')
+    
+    def _generate_person_id(self, name: str, email: Optional[str] = None) -> str:
+        identifier = name.lower()
+        if email:
+            identifier += email.lower()
+        return hashlib.md5(identifier.encode()).hexdigest()[:16]
+    
+    def _calculate_similarity(self, name1: str, name2: str) -> float:
+        return difflib.SequenceMatcher(None, name1.lower(), name2.lower()).ratio()
+    
+    def _extract_last_name(self, name: str) -> str:
+        parts = name.strip().split()
+        return parts[-1] if parts else ""
+    
+    def find_matching_person(self, person: Dict, existing_persons: List[Dict]) -> Optional[Dict]:
+        """
+        Find if a person matches an existing one using multiple strategies:
+        1. Exact name match
+        2. Fuzzy name match (>0.85 similarity)
+        3. Last name + email domain match
+        4. LinkedIn/GitHub URL match
+        """
+        person_name = person.get('Name', '')
+        person_email = person.get('Email', '')
+        person_linkedin = person.get('URL', '')
+        person_github = person.get('GitHub_URL', '')
+        
+        # Extract emails from Emails list if present
+        if not person_email and person.get('Emails'):
+            emails_list = person.get('Emails', [])
+            if emails_list and isinstance(emails_list, list):
+                person_email = emails_list[0] if emails_list else ''
+        
+        best_match = None
+        best_score = 0
+        
+        for existing in existing_persons:
+            score = 0
+            existing_name = existing.get('Name', '')
+            existing_email = existing.get('Email', '')
+            existing_linkedin = existing.get('URL', '')
+            existing_github = existing.get('GitHub_URL', '')
+            
+            # Extract emails from Emails list if present
+            if not existing_email and existing.get('Emails'):
+                existing_emails = existing.get('Emails', [])
+                if existing_emails and isinstance(existing_emails, list):
+                    existing_email = existing_emails[0] if existing_emails else ''
+            
+            # Strategy 1: Exact name match
+            if person_name.lower() == existing_name.lower():
+                score = 1.0
+            
+            # Strategy 2: Fuzzy name match (>0.85)
+            elif self._calculate_similarity(person_name, existing_name) > 0.85:
+                score = 0.95
+            
+            # Strategy 3: Last name + email domain match
+            elif (self._extract_last_name(person_name) == self._extract_last_name(existing_name) and
+                  person_email and existing_email and 
+                  '@' in person_email and '@' in existing_email and
+                  person_email.split('@')[-1] == existing_email.split('@')[-1]):
+                score = 0.9
+            
+            # Strategy 4: URL match
+            elif (person_linkedin and existing_linkedin and 
+                  person_linkedin == existing_linkedin):
+                score = 1.0
+            elif (person_github and existing_github and 
+                  person_github == existing_github):
+                score = 1.0
+            
+            # Bonus: Email matches
+            if person_email and existing_email and person_email == existing_email:
+                score = 1.0
+            
+            if score > best_score:
+                best_score = score
+                best_match = existing
+        
+        return best_match if best_score >= 0.85 else None
+    
+    def merge_persons(self, primary: Dict, secondary: Dict) -> Dict:
+        merged = primary.copy()
+        
+        # Merge fields (prefer non-empty values)
+        for field in ['Name', 'Username', 'Email', 'URL', 'GitHub_URL', 'LinkedIn_URL', 'Real_Name']:
+            if not merged.get(field) and secondary.get(field):
+                merged[field] = secondary[field]
+        
+        # Merge lists (emails, links)
+        for list_field in ['Emails', 'Found_Links']:
+            if list_field in merged and list_field in secondary:
+                merged[list_field] = list(set(merged.get(list_field, []) + secondary.get(list_field, [])))
+            elif list_field in secondary:
+                merged[list_field] = secondary[list_field]
+        
+        # Merge sources
+        merged['Sources'] = list(set(
+            merged.get('Sources', []) + secondary.get('Sources', [])
+        ))
+        
+        # Preserve source field for compatibility
+        if 'Source' in secondary and 'Source' not in merged:
+            merged['Source'] = secondary['Source']
+        elif 'Source' in merged and 'Source' in secondary and merged['Source'] != secondary['Source']:
+            merged['Source'] = f"{merged['Source']}, {secondary['Source']}"
+        
+        # Track merge history
+        merged['Merged_From'] = merged.get('Merged_From', [])
+        if secondary.get('_id'):
+            merged['Merged_From'].append(secondary['_id'])
+        
+        return merged
+    
+    def get_or_create_person_id(self, person: Dict) -> str:
+        # Check if person already has an ID
+        if '_id' in person and person['_id']:
+            return person['_id']
+        
+        # Generate ID from name and email
+        email = person.get('Email')
+        if not email and person.get('Emails'):
+            emails_list = person.get('Emails', [])
+            if emails_list and isinstance(emails_list, list):
+                email = emails_list[0] if emails_list else None
+        
+        person_id = self._generate_person_id(
+            person.get('Name', 'unknown'),
+            email
+        )
+        
+        # Store in database
+        with sqlite3.connect(self.db_path) as conn:
+            # Check if exists
+            cursor = conn.execute('SELECT person_id FROM persons WHERE person_id = ?', (person_id,))
+            if not cursor.fetchone():
+                # Insert new person
+                conn.execute('''
+                    INSERT INTO persons (person_id, canonical_name, emails, linkedin_url, github_url, first_seen, last_seen, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    person_id,
+                    person.get('Name', ''),
+                    json.dumps(person.get('Emails', [])),
+                    person.get('URL', ''),
+                    person.get('GitHub_URL', ''),
+                    datetime.now().isoformat(),
+                    datetime.now().isoformat(),
+                    json.dumps({k: v for k, v in person.items() if k not in ['_id']})
+                ))
+        
+        return person_id
+    
+    def deduplicate_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        
+        # Convert DataFrame to list of dicts
+        people_list = df.to_dict('records')
+        
+        # Process each person and merge duplicates
+        unique_people = []
+        
+        for person in people_list:
+            # Find if this person matches an existing one
+            match = self.find_matching_person(person, unique_people)
+            
+            if match:
+                # Merge into existing person
+                merged_person = self.merge_persons(match, person)
+                # Replace the existing entry
+                idx = unique_people.index(match)
+                unique_people[idx] = merged_person
+            else:
+                # Add as new person
+                person['_id'] = self.get_or_create_person_id(person)
+                unique_people.append(person)
+        
+        # Convert back to DataFrame
+        result_df = pd.DataFrame(unique_people)
+        
+        # Clean up internal fields for display
+        for col in ['_id', 'Merged_From', 'Sources']:
+            if col in result_df.columns:
+                # Keep for internal use but don't display by default
+                pass
+        
+        return result_df
 
 class OSINTCollector:
     def __init__(self, target_company, target_domain, github_token=None, hibp_key=None):
@@ -415,7 +632,6 @@ class OSINTCollector:
         
         # Performance tracking
         self.execution_times = {}
-
 
     def _enrich_and_pivot(self, found_entities, df_github_users):
         st.info("🔄 Phase 5: Enriching identities and pivoting across sources...")
@@ -530,6 +746,13 @@ class OSINTCollector:
             if re.search(r"[/\s]|activity-\d+", username):
                 username = "N/A"
 
+            # Get emails
+            emails = row.get("Emails", [])
+            if isinstance(emails, str):
+                emails = [emails] if emails else []
+            elif not isinstance(emails, list):
+                emails = []
+
             return {
                 "Name": name,
                 "Username": username,
@@ -537,7 +760,7 @@ class OSINTCollector:
                 "Status": str(row.get("Status") or source_label),
                 "Official_Company": str(row.get("Official_Company") or row.get("Company") or self.target_company),
                 "Found_Links": links,
-                "Emails": list(row.get("Emails") or []),
+                "Emails": emails,
                 "URL": row.get("URL") or row.get("url") or (links[0] if links else None),
                 "Details": str(row.get("Details") or ""),
                 "Real_Name": str(row.get("Real_Name") or name),
@@ -552,45 +775,50 @@ class OSINTCollector:
             for _, row in df_github.iterrows():
                 candidates.append(_row_to_dict(row, "GitHub"))
 
-        # 2. Deduplicate by normalised name 
-        merged: List[dict] = []
-
-        def _names_overlap(norm_a: str, norm_b: str) -> bool:
-            tokens_a = set(norm_a.split())
-            tokens_b = set(norm_b.split())
-            if len(tokens_a) < 2 or len(tokens_b) < 2:
-                return False
-            common = tokens_a & tokens_b
-            return len(common) >= 2
-
+        # Use EnhancedDeduplicator for matching logic
+        deduplicator = EnhancedDeduplicator()
+        
+        # Build merged list using the existing _merge_person_dicts function
+        merged = []
+        
         for candidate in candidates:
             norm = candidate["_norm"]
             if not norm or norm == "unknown":
                 merged.append(candidate)
                 continue
-
+            
             # Try to find an existing merged entry to absorb into
             matched = None
             for existing in merged:
                 existing_norm = existing.get("_norm", "")
                 if not existing_norm:
                     continue
-                # Exact match
-                if norm == existing_norm:
+                
+                # Use deduplicator's matching logic
+                match_result = deduplicator.find_matching_person(candidate, [existing])
+                if match_result:
                     matched = existing
                     break
-                # Partial token overlap
-                if _names_overlap(norm, existing_norm):
-                    matched = existing
-                    break
-
+            
             if matched:
+                # Use the existing _merge_person_dicts function
                 _merge_person_dicts(matched, candidate)
             else:
                 merged.append(candidate)
-
-        # 3. Post-process each merged person 
+        
+        # Also check across all candidates with the deduplicator's more sophisticated matching
+        # This handles cases where the simple name-based matching might miss matches
+        final_merged = []
         for person in merged:
+            # Look for matches in final_merged using the deduplicator
+            match = deduplicator.find_matching_person(person, final_merged)
+            if match:
+                _merge_person_dicts(match, person)
+            else:
+                final_merged.append(person)
+        
+        # 3. Post-process each merged person 
+        for person in final_merged:
             # Remove the internal normalisation key
             person.pop("_norm", None)
 
@@ -614,8 +842,7 @@ class OSINTCollector:
                     if not person.get("URL"):
                         person["URL"] = person["Found_Links"][0]
 
-        return pd.DataFrame(merged) if merged else pd.DataFrame()
-
+        return pd.DataFrame(final_merged) if final_merged else pd.DataFrame()
 
     def _check_github_api_details(self):
         try:
@@ -671,9 +898,9 @@ class OSINTCollector:
         status_placeholder = st.empty()
         progress_bar = st.progress(0)   
 
-        for i, email in enumerate(all_emails[:10]):
+        for i, email in enumerate(all_emails[:100]):
             status_placeholder.info(f"🔍 Checking: {email}")
-            progress_bar.progress((i + 1) / min(len(all_emails), 10))
+            progress_bar.progress((i + 1) / min(len(all_emails), 100))
             
             result = self.breach_checker.check_email(email, use_api_if_available=False)
             
@@ -712,22 +939,27 @@ class OSINTCollector:
         
         self.code_scanner.searched_terms.add(self.target_company.lower())
         self.code_scanner.searched_terms.update(prioritized_terms)
-        
+        self.code_scanner.enable_secret_detection = True
+
         github_result = self.code_scanner.iterative_search(
             external_entities=found_entities[:3]
         )
         
+        if hasattr(github_result, 'secret_findings'):
+            st.session_state['secret_findings'] = github_result.secret_findings
+            st.session_state['secrets_summary'] = github_result.secrets_summary
+
         self.execution_times['code_scan'] = time.time() - start
         return github_result
 
-    async def process_github_users_async(self, df_github_users, limit=3):
+    async def process_github_users_async(self, df_github_users, limit=10):
         start = time.time()
         
         if df_github_users.empty:
             return []
         
         all_findings = []
-        rate_limiter = AsyncRateLimiter(max_calls=2, period=1.0)
+        rate_limiter = AsyncRateLimiter(max_calls=3, period=1.0)
         
         async with aiohttp.ClientSession() as session:
             tasks = []
@@ -735,8 +967,11 @@ class OSINTCollector:
                 task = self._process_single_user_async(session, user, rate_limiter)
                 tasks.append(task)
             
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
+                if isinstance(result, Exception):
+                    print(f"Error processing user: {result}")
+                    continue
                 if result:
                     all_findings.extend(result)
         
@@ -879,6 +1114,41 @@ class OSINTCollector:
             print(f"Error in social search: {e}")
             return []
 
+    async def _run_social_searches_parallel(self, entities: List[Dict]) -> Dict[str, List[Dict]]:
+        semaphore = asyncio.Semaphore(3)  # Max 3 concurrent searches
+        
+        async def search_with_semaphore(entity):
+            async with semaphore:
+                name = entity.get('name', '')
+                if not name:
+                    return name, []
+                
+                # Run sync search in thread pool
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor() as executor:
+                    result = await loop.run_in_executor(
+                        executor,
+                        self.social_scanner.search_entity_globally,
+                        name,
+                        self.target_company
+                    )
+                return name, result if isinstance(result, list) else []
+        
+        # Execute all searches in parallel
+        tasks = [search_with_semaphore(entity) for entity in entities[:100]]  # Limit to 100
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Build results dict
+        social_results = {}
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Error in parallel social search: {result}")
+                continue
+            name, hits = result
+            social_results[name] = hits
+        
+        return social_results
+
     def run_full_scan(self):
         # Initialize URL tracking for this scan
         if 'scraped_urls_global' not in st.session_state:
@@ -887,7 +1157,7 @@ class OSINTCollector:
         # Clear for new scan
         st.session_state.scraped_urls_global = set()
 
-        # Pass this set to all relevant scanners (adapt for future modules as needed)
+        # Pass this set to all relevant scanners
         self.people_scanner.scraped_urls_global = st.session_state.scraped_urls_global
         self.code_scanner.scraped_urls_global = st.session_state.scraped_urls_global
 
@@ -928,7 +1198,11 @@ class OSINTCollector:
         enrichment = self.enricher.get_details(self.target_domain)
         infra_combined = dns_data + web_data
 
-        #Freely adaptable for more details
+        # Store separated findings for better display
+        self.infra_dns_findings = dns_data
+        self.infra_web_findings = web_data
+
+        # Extract tech keywords
         tech_keywords = set()
         for item in infra_combined:
             if 'Software' in item:
@@ -947,7 +1221,7 @@ class OSINTCollector:
         )
         progress_bar.progress(25)
 
-        df_people_osint = self.people_scanner.scan_all_sources(limit=10)
+        df_people_osint = self.people_scanner.scan_all_sources(limit=100)
         found_entities_from_osint = []
         people_keywords = set()
 
@@ -1021,6 +1295,7 @@ class OSINTCollector:
 
                 entity['scraped_social_links'] = list(set(entity['scraped_social_links'] + verified_social_links))
                 found_entities_from_osint.append(entity)
+        
         # Merge people discovered during scraping
         if hasattr(self.people_scanner, "discovered_people"):
             existing_names_low = {
@@ -1061,7 +1336,7 @@ class OSINTCollector:
             st.caption(f"   📎 Davon mit URLs: {with_urls}")
 
         # Phase 3: Social Media
-        status_text.text("🔄 Phase 3/5: Searching for Social Media Profiles...")
+        status_text.text("🔄 Phase 3/5: Searching for Social Media Profiles (Parallel)...")
         st.session_state.update(
             scan_status="🔄 Phase 3/5: Searching for Social Media Profiles...",
             scan_progress=40,
@@ -1069,19 +1344,26 @@ class OSINTCollector:
         progress_bar.progress(40)
 
         social_entities = []
-        if not df_people_osint.empty:
-            for _, person in df_people_osint.head(3).iterrows():
-                name = person.get('Name', '')
-                if name:
-                    social_hits = self.social_scanner.search_entity_globally(name, self.target_company)
-                    social_profile_urls = self.social_scanner.search_social_profiles(
-                        name, self.target_company
-                    )
-                    for url in social_profile_urls:
-                        if url not in entity['scraped_social_links']:
-                            entity['scraped_social_links'].append(url)
-                            print(f"  📱 Added social profile: {url}")
-                    for hit in social_hits:
+        if not df_people_osint.empty and len(found_entities_from_osint) > 0:
+            st.info(f"🔍 Searching social media for {min(10, len(found_entities_from_osint))} entities in parallel...")
+            
+            # Run parallel social searches
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                social_results = loop.run_until_complete(
+                    self._run_social_searches_parallel(found_entities_from_osint[:100])
+                )
+                
+                # Process results
+                for name, hits in social_results.items():
+                    if not hits:
+                        continue
+                    
+                    for hit in hits[:2]:  # Top 2 results per person
+                        if not isinstance(hit, dict):
+                            continue
+                        
                         social_entity = {'name': name}
                         
                         if 'Link' in hit and hit['Link']:
@@ -1106,6 +1388,12 @@ class OSINTCollector:
                         
                         if social_entity.get('url'):
                             social_entities.append(social_entity)
+                            st.caption(f"  ✅ Found profile for {name}")
+                
+                if social_entities:
+                    st.success(f"✅ Found {len(social_entities)} social media profiles")
+            finally:
+                loop.close()
 
         found_entities_from_osint.extend(social_entities)
 
@@ -1183,7 +1471,7 @@ class OSINTCollector:
 
         progress_bar.progress(80)
 
-        # Phase 5: Pivot & Combine 
+        # Phase 5: Pivot & Combine
         status_text.text("🕵️ Phase 5/5: Analyze and combine findings...")
         st.session_state.update(
                 scan_status="🕵️ Phase 5/5: Analyze and combine findings...",
@@ -1196,29 +1484,22 @@ class OSINTCollector:
         df_github_pivoted = pd.DataFrame()
 
         if not df_github_users.empty:
-            login_col = next(
-                (c for c in df_github_users.columns if c.lower() in ['login', 'username', 'user', 'name', 'github_user']),
-                df_github_users.columns[0]
-            )
-            cache_key = "github_scan_" + str(sorted(df_github_users[login_col].tolist()))          
-            if cache_key not in st.session_state:
-                st.write(f"Analyze {min(5, len(df_github_users))} GitHub-Entities from Social Media...")
-                
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    all_findings = loop.run_until_complete(
-                        self.process_github_users_async(df_github_users, limit=5)
-                    )
-                    st.session_state[cache_key] = all_findings
-                finally:
-                    loop.close()
+            st.info(f"🔄 Processing {min(10, len(df_github_users))} GitHub users with async social search...")
             
-            cached = st.session_state.get(cache_key, [])
-            if cached:
-                df_github_pivoted = pd.DataFrame(cached)
-        # Build final people DataFrame using the fixed _combine_people_results
-        # Convert enriched_entities list back to a DataFrame for the combiner
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                all_findings = loop.run_until_complete(
+                    self.process_github_users_async(df_github_users, limit=10)
+                )
+                
+                if all_findings:
+                    df_github_pivoted = pd.DataFrame(all_findings)
+                    st.success(f"✅ Processed {len(all_findings)} GitHub user profiles")
+            finally:
+                loop.close()
+        
+        # Build final people DataFrame
         df_enriched_osint = pd.DataFrame(
             [
                 {
@@ -1379,7 +1660,7 @@ def main():
     if st.sidebar.button("Start Scan", disabled=st.session_state.is_scanning):
         st.session_state.is_scanning = True
         st.session_state.scan_results = None
-        st.rerun()  # First rerun to disable UI
+        st.rerun()
 
     # If scanning flag is True, actually run the scan (but only once)
     if st.session_state.is_scanning and st.session_state.scan_results is None:
@@ -1402,9 +1683,9 @@ def main():
             'generated_breach_results': generated_breach_results,
         }
         st.session_state.is_scanning = False
-        st.rerun()  # Final rerun to show results and re‑enable UI
+        st.rerun()
 
-    # Show live progress in sidebar (only updated after reruns, but inline progress inside scan works)
+    # Show live progress in sidebar
     if st.session_state.is_scanning:
         st.sidebar.info("🔄 Scan in progress...")
         progress = st.session_state.get('scan_progress', 0)
@@ -1491,32 +1772,105 @@ def render_dashboard(results, collector):
         st.caption(f"People OSINT: {people_risk}/100")
 
     st.divider()
-    st.subheader("Risk Breakdown Details")
+    
+    st.subheader("🏗️ Infrastructure Findings")
+    
+    # Separate DNS and Web findings
+    infra_data = results.get("infra", [])
+    dns_findings = [item for item in infra_data if item not in results.get("web_findings", [])] if "web_findings" in results else infra_data
+    web_findings = results.get("web_findings", [])
+    
+    # If web_findings not stored separately, try to infer from data structure
+    if not web_findings and infra_data:
+        dns_keywords = ["SPF", "DMARC", "DKIM", "Mail", "Policy", "Workspace", "Office 365"]
+        dns_findings = []
+        web_findings = []
+        
+        for item in infra_data:
+            software = item.get("Software", "")
+            if any(keyword in software for keyword in dns_keywords):
+                dns_findings.append(item)
+            else:
+                web_findings.append(item)
+    
+    # Display DNS/Security Records
+    if dns_findings:
+        with st.expander("📧 DNS & Email Security Records", expanded=True):
+            for finding in dns_findings:
+                software = finding.get("Software", "Unknown")
+                risk = finding.get("Risk", "Info")
+                
+                if risk == "High":
+                    st.error(f"⚠️ **{software}** - Risk: {risk}")
+                elif risk == "Medium":
+                    st.warning(f"⚠️ **{software}** - Risk: {risk}")
+                else:
+                    st.info(f"ℹ️ **{software}** - Risk: {risk}")
+    
+    # Display Web Technologies
+    if web_findings:
+        with st.expander("🌐 Web Technologies & Headers", expanded=True):
+            col1, col2 = st.columns(2)
+            for i, finding in enumerate(web_findings):
+                software = finding.get("Software", "Unknown")
+                risk = finding.get("Risk", "Info")
+                
+                target_col = col1 if i % 2 == 0 else col2
+                with target_col:
+                    if risk == "High":
+                        st.error(f"**{software}**")
+                    elif risk == "Medium":
+                        st.warning(f"**{software}**")
+                    else:
+                        st.caption(f"• {software}")
+    
+    # Display Subdomains
+    if results.get('subdomains'):
+        with st.expander("🔗 Discovered Subdomains", expanded=False):
+            for sub in results['subdomains']:
+                st.error(f"⚠️ {sub.get('Portal', 'Unknown')} - {sub.get('Risk', 'High Risk')}")
+    
+    # Display Safe Browsing
+    with st.expander("🛡️ Google Safe Browsing", expanded=False):
+        safe = results.get('safe_search', {})
+        status_text = safe.get('status', 'Not checked')
+        report_url = safe.get('url', '')
+        if '✅' in status_text:
+            st.success(status_text)
+        elif '❌' in status_text:
+            st.error(status_text)
+        elif '⚠️' in status_text:
+            st.warning(status_text)
+        else:
+            st.info(status_text)
+        if report_url:
+            st.markdown(f"[🔗 View full Google Transparency Report]({report_url})")
+    
+    # Display Risk Breakdown Details
+    st.divider()
+    st.subheader("📊 Risk Breakdown Details")
     for label, score in [("Infrastructure", infra_risk), ("Code / GitHub", code_risk), ("People OSINT", people_risk)]:
         st.write(f"**{label}**")
         st.progress(score / 100)
-
-    if results['subdomains']:
-        st.divider()
-        st.subheader("⚠️ Critical Subdomains")
-        for sub in results['subdomains']:
-            st.error(f"{sub.get('Portal', 'Unknown')}")
-
-    st.divider()
-    st.subheader("🔍 Google Safe Browsing")
-    safe = results.get('safe_search', {})
-    status_text = safe.get('status', 'Not checked')
-    report_url = safe.get('url', '')
-    if '✅' in status_text:
-        st.success(status_text)
-    elif '❌' in status_text:
-        st.error(status_text)
-    elif '⚠️' in status_text:
-        st.warning(status_text)
-    else:
-        st.info(status_text)
-    if report_url:
-        st.markdown(f"[🔗 View full Google Transparency Report]({report_url})")
+    
+    # Display Company Enrichment Info
+    if results.get('enrichment'):
+        with st.expander("🏢 Company Information", expanded=False):
+            enrichment = results['enrichment']
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Company:** {enrichment.get('name', 'Unknown')}")
+                st.write(f"**Registrar:** {enrichment.get('registrar', 'Unknown')}")
+                st.write(f"**Domain Created:** {enrichment.get('domain_created', 'Unknown')}")
+                st.write(f"**Domain Expires:** {enrichment.get('domain_expires', 'Unknown')}")
+            with col2:
+                st.write(f"**IP Address:** {enrichment.get('ip_address', 'Unknown')}")
+                st.write(f"**ASN:** {enrichment.get('asn', 'Unknown')}")
+                st.write(f"**Location:** {enrichment.get('location', 'Unknown')}")
+                if enrichment.get('linkedin'):
+                    st.write(f"**LinkedIn:** [Company Page]({enrichment['linkedin']})")
+            if enrichment.get('description'):
+                st.write(f"**Description:** {enrichment['description']}")
 
 def render_people_page(results):
     if st.session_state.get('is_scanning', False):
@@ -1580,23 +1934,85 @@ def render_code_page(results):
     repo_count = len(df)
     high_risk = df[df['risk_score'] >= 50].shape[0] if 'risk_score' in df.columns else 0
     contributors = df['repo_name'].nunique()
+
+    secret_findings = st.session_state.get('secret_findings', [])
+    secrets_summary = st.session_state.get('secrets_summary', {'total': 0})
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Repositories", repo_count)
     col2.metric("High Risk", high_risk)
     col3.metric("Contributors", contributors)
-    col4.metric("Secrets Found", 0)
+    col4.metric("Secrets Found", secrets_summary.get('total', 0))
+
+    # Display secret findings
+    if secret_findings and len(secret_findings) > 0:
+        st.warning(f"🔐 **{len(secret_findings)} potential secrets discovered!**")
+        
+        risk_col1, risk_col2, risk_col3, risk_col4 = st.columns(4)
+        critical = sum(1 for f in secret_findings if getattr(f, 'risk_level', '') == 'CRITICAL')
+        high = sum(1 for f in secret_findings if getattr(f, 'risk_level', '') == 'HIGH')
+        medium = sum(1 for f in secret_findings if getattr(f, 'risk_level', '') == 'MEDIUM')
+        low = sum(1 for f in secret_findings if getattr(f, 'risk_level', '') == 'LOW')
+        
+        risk_col1.metric("🔴 CRITICAL", critical)
+        risk_col2.metric("🟠 HIGH", high)
+        risk_col3.metric("🟡 MEDIUM", medium)
+        risk_col4.metric("🔵 LOW", low)
+        
+        with st.expander("🔍 View Secret Details", expanded=False):
+            for finding in secret_findings[:20]:
+                with st.container():
+                    if isinstance(finding, dict):
+                        finding_type = finding.get('type', 'Unknown')
+                        risk_level = finding.get('risk_level', 'UNKNOWN')
+                        file_path = finding.get('file_path', 'Unknown')
+                        line_number = finding.get('line_number', 0)
+                        context = finding.get('context', 'No context available')
+                        value = finding.get('value', '***')
+                    else:
+                        finding_type = getattr(finding, 'type', 'Unknown')
+                        risk_level = getattr(finding, 'risk_level', 'UNKNOWN')
+                        file_path = getattr(finding, 'file_path', 'Unknown')
+                        line_number = getattr(finding, 'line_number', 0)
+                        context = getattr(finding, 'context', 'No context available')
+                        value = getattr(finding, 'value', '***')
+                    
+                    if risk_level == 'CRITICAL':
+                        st.markdown(f"<span style='color:#ff0000'>**🔴 {finding_type} - {risk_level}**</span>", unsafe_allow_html=True)
+                    elif risk_level == 'HIGH':
+                        st.markdown(f"<span style='color:#ff6600'>**🟠 {finding_type} - {risk_level}**</span>", unsafe_allow_html=True)
+                    elif risk_level == 'MEDIUM':
+                        st.markdown(f"<span style='color:#ffcc00'>**🟡 {finding_type} - {risk_level}**</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"**🔵 {finding_type} - {risk_level}**")
+                    
+                    st.code(f"File: {file_path}:{line_number}")
+                    st.caption(f"Value: `{value}`")
+                    st.caption(f"Context: {context[:200]}...")
+                    st.divider()
 
     st.subheader("GitHub Repositories — sorted by risk score")
+    
     df_sorted = df.sort_values('risk_score', ascending=False) if 'risk_score' in df.columns else df
+
     for _, repo in df_sorted.iterrows():
         risk = repo.get('risk_score', 0)
         name = repo.get('repo_name', 'Unknown')
         url = repo.get('url', '#')
         desc = repo.get('description', '')
+        
+        has_secrets = repo.get('has_secrets', False)
+        secret_count = repo.get('secret_count', 0)
+
         with st.container():
             cols = st.columns([3, 1])
-            cols[0].markdown(f"**{name}**")
-            cols[0].caption(desc)
+            
+            if has_secrets:
+                cols[0].markdown(f"**🔐 {name}** ⚠️ ({secret_count} secrets found)")
+            else:
+                cols[0].markdown(f"**{name}**")
+            
+            cols[0].caption(desc if desc else "No description")
             cols[1].metric("Risk Score", f"{risk}/100")
             st.progress(min(risk / 100, 1.0))
             st.markdown(f"[Inspect Repository]({url})")
