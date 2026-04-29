@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from bs4 import BeautifulSoup
 from html_scraper import HTMLScraper
+from secret_detector import SecretDetector, SecretFinding
 @dataclass
 class ScanResult:
     repos: pd.DataFrame; 
@@ -40,6 +41,10 @@ class CodeScanner:
         self.github_token = github_token
         self.session = requests.Session()
         self.html_scraper = HTMLScraper(delay=1.0)
+        self.secret_detector = SecretDetector()
+        self.enable_secret_detection = True
+        self.secret_findings = [] 
+        self.processed_repos_for_secrets = set()
         if github_token:
             self.session.headers.update({'Authorization': f'token {github_token}'})
             if verbose:
@@ -71,7 +76,214 @@ class CodeScanner:
         self.api_calls_used = 0
         self.max_api_calls = 250  # Default budget
         self.start_time = None
-
+    
+    def _get_repo_file_contents(self, repo_full_name: str, file_path: str) -> Optional[str]:
+        # Try API first
+        if not self.using_fallback and self.github_token:
+            url = f"{self.base_url}/repos/{repo_full_name}/contents/{file_path}"
+            response = self._api_request(url)
+            
+            if response and response.status_code == 200:
+                try:
+                    data = response.json()
+                    if 'content' in data:
+                        # Decode base64 content
+                        content = base64.b64decode(data['content']).decode('utf-8', errors='ignore')
+                        return content
+                except Exception as e:
+                    self._log(f"      ⚠️ Failed to decode {file_path}: {e}")
+        
+        # Try web fallback
+        try:
+            url = f"https://raw.githubusercontent.com/{repo_full_name}/main/{file_path}"
+            response = self.web_session.get(url, timeout=10)
+            if response.status_code == 200:
+                return response.text
+            
+            # Try master branch if main fails
+            url = f"https://raw.githubusercontent.com/{repo_full_name}/master/{file_path}"
+            response = self.web_session.get(url, timeout=10)
+            if response.status_code == 200:
+                return response.text
+        except Exception as e:
+            pass
+        
+        return None
+    
+    def _list_repo_files(self, repo_full_name: str, path: str = "") -> List[str]:
+        file_paths = []
+        
+        if self.using_fallback or not self.github_token:
+            return file_paths  # Web fallback doesn't support directory listing efficiently
+        
+        url = f"{self.base_url}/repos/{repo_full_name}/contents/{path}"
+        response = self._api_request(url)
+        
+        if response and response.status_code == 200:
+            try:
+                items = response.json()
+                for item in items:
+                    if item['type'] == 'file':
+                        # Check if it's a file we want to scan
+                        if any(item['name'].endswith(ext) for ext in self.secret_detector.SCAN_EXTENSIONS):
+                            file_paths.append(item['path'])
+                    elif item['type'] == 'dir':
+                        # Recursively list subdirectories (limit depth to avoid too many API calls)
+                        if path.count('/') < 3:  # Limit depth to 3 levels
+                            sub_paths = self._list_repo_files(repo_full_name, item['path'])
+                            file_paths.extend(sub_paths)
+            except Exception as e:
+                self._log(f"      ⚠️ Failed to list files in {path}: {e}")
+        
+        return file_paths
+    
+    def scan_repository_for_secrets(self, repo_full_name: str, max_files: int = 20) -> List[SecretFinding]:
+        if not self.enable_secret_detection:
+            return []
+        
+        # Check if we've already scanned this repo
+        if repo_full_name in self.processed_repos_for_secrets:
+            return []
+        
+        self.processed_repos_for_secrets.add(repo_full_name)
+        findings = []
+        
+        self._log(f"      🔐 Scanning {repo_full_name} for secrets...")
+        
+        # Get list of files to scan
+        file_paths = self._list_repo_files(repo_full_name)
+        
+        if not file_paths:
+            # If API listing failed, try to scan common high-risk files
+            common_files = [
+                '.env', '.env.local', '.env.production', 'config.py', 
+                'settings.py', 'secrets.py', 'credentials.json',
+                '.gitlab-ci.yml', '.github/workflows/*.yml'
+            ]
+            file_paths = common_files
+        
+        # Limit number of files to scan
+        file_paths = file_paths[:max_files]
+        
+        for file_path in file_paths:
+            # Check rate limit budget
+            if self.api_calls_used + 1 > self.max_api_calls:
+                self._log(f"      ⚠️ API budget exhausted, stopping secret scan")
+                break
+            
+            content = self._get_repo_file_contents(repo_full_name, file_path)
+            if content:
+                file_findings = self.secret_detector.scan_content(content, f"{repo_full_name}/{file_path}")
+                findings.extend(file_findings)
+                
+                if file_findings:
+                    self._log(f"        ⚠️ Found {len(file_findings)} secret(s) in {file_path}")
+        
+        # Store findings
+        self.secret_findings.extend(findings)
+        
+        return findings
+    
+    def scan_all_repos_for_secrets(self, max_repos: int = 5, max_files_per_repo: int = 20) -> List[SecretFinding]:
+        if not self.enable_secret_detection or self.all_repos.empty:
+            return []
+        
+        all_findings = []
+        
+        # Prioritize repos with higher risk scores
+        repos_to_scan = self.all_repos.copy()
+        if 'risk_score' in repos_to_scan.columns:
+            repos_to_scan = repos_to_scan.sort_values('risk_score', ascending=False)
+        
+        # Limit number of repos
+        repos_to_scan = repos_to_scan.head(max_repos)
+        
+        self._log(f"\n🔐 Scanning {len(repos_to_scan)} repositories for secrets...")
+        
+        for _, repo in repos_to_scan.iterrows():
+            repo_name = repo.get('repo_name')
+            if repo_name:
+                findings = self.scan_repository_for_secrets(repo_name, max_files_per_repo)
+                all_findings.extend(findings)
+        
+        # Update risk scores based on secret findings
+        self._update_risk_scores_with_secrets()
+        
+        return all_findings
+    
+    def _update_risk_scores_with_secrets(self):
+        if not self.secret_findings or self.all_repos.empty:
+            return
+        
+        # Group findings by repository
+        findings_by_repo = {}
+        for finding in self.secret_findings:
+            # Extract repo name from file path
+            repo_name = finding.file_path.split('/')[0] + '/' + finding.file_path.split('/')[1] if '/' in finding.file_path else None
+            if repo_name:
+                if repo_name not in findings_by_repo:
+                    findings_by_repo[repo_name] = []
+                findings_by_repo[repo_name].append(finding)
+        
+        # Update risk scores
+        for repo_name, findings in findings_by_repo.items():
+            # Calculate additional risk from secrets
+            secret_risk = 0
+            for finding in findings:
+                if finding.risk_level == 'CRITICAL':
+                    secret_risk += 30
+                elif finding.risk_level == 'HIGH':
+                    secret_risk += 15
+                elif finding.risk_level == 'MEDIUM':
+                    secret_risk += 5
+                elif finding.risk_level == 'LOW':
+                    secret_risk += 1
+            
+            # Cap at 100
+            secret_risk = min(secret_risk, 100)
+            
+            # Update the repo's risk score in the DataFrame
+            mask = self.all_repos['repo_name'] == repo_name
+            if mask.any():
+                current_risk = self.all_repos.loc[mask, 'risk_score'].iloc[0] if 'risk_score' in self.all_repos.columns else 0
+                new_risk = min(current_risk + secret_risk, 100)
+                self.all_repos.loc[mask, 'risk_score'] = new_risk
+                self.all_repos.loc[mask, 'has_secrets'] = True
+                self.all_repos.loc[mask, 'secret_count'] = len(findings)
+                self.all_repos.loc[mask, 'secret_risk'] = secret_risk
+    
+    def get_secrets_summary(self) -> Dict:
+        if not self.secret_findings:
+            return {
+                'total': 0,
+                'critical': 0,
+                'high': 0,
+                'medium': 0,
+                'low': 0,
+                'findings': []
+            }
+        
+        summary = {
+            'total': len(self.secret_findings),
+            'critical': 0,
+            'high': 0,
+            'medium': 0,
+            'low': 0,
+            'findings': self.secret_findings
+        }
+        
+        for finding in self.secret_findings:
+            if finding.risk_level == 'CRITICAL':
+                summary['critical'] += 1
+            elif finding.risk_level == 'HIGH':
+                summary['high'] += 1
+            elif finding.risk_level == 'MEDIUM':
+                summary['medium'] += 1
+            elif finding.risk_level == 'LOW':
+                summary['low'] += 1
+        
+        return summary
+    
     def _log(self, message: str):
         if self.verbose:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
@@ -985,6 +1197,7 @@ class CodeScanner:
         self._log(f"Target: {self.target_company}")
         self._log(f"Max API Calls: {self.max_api_calls}")
         self._log(f"Mode: {'🌐 Web Fallback' if self.using_fallback else '🔑 API Mode'}")
+        self._log(f"Secret Detection: {'✅ Enabled' if self.enable_secret_detection else '❌ Disabled'}")
         
         # Add external entities from OSINT
         if external_entities:
@@ -1015,14 +1228,25 @@ class CodeScanner:
         # PHASE 3: Search by found entities 
         if self.found_entities and not self._check_timeout():
             self._log(f"\n🔍 PHASE 3: Deep diving on {min(3, len(self.found_entities))} entities...")
-            for entity in self.found_entities[:10]:  
+            for entity in self.found_entities[:100]:  
                 if self._check_timeout():
                     break
                 self._search_by_entity_hybrid(entity)  
         
         if search_queue and not self._check_timeout():
             self._log(f"\n🔑 PHASE 4: Exploring keywords...")
-            self._explore_keywords_hybrid(search_queue, max_keywords=3)  
+            self._explore_keywords_hybrid(search_queue, max_keywords=3)
+        
+        # PHASE 5: Scan for secrets (NEW)
+        if self.enable_secret_detection and not self.all_repos.empty:
+            self._log(f"\n🔐 PHASE 5: Scanning repositories for secrets...")
+            secret_findings = self.scan_all_repos_for_secrets(max_repos=5, max_files_per_repo=15)
+            if secret_findings:
+                self._log(f"   ⚠️ Found {len(secret_findings)} potential secrets!")
+                secret_summary = self.get_secrets_summary()
+                self._log(f"   📊 CRITICAL: {secret_summary['critical']}, HIGH: {secret_summary['high']}, MEDIUM: {secret_summary['medium']}, LOW: {secret_summary['low']}")
+            else:
+                self._log(f"   ✅ No secrets found in scanned repositories")
         
         self._log(f"\n{'='*70}")
         self._log(f"🎯 SCAN COMPLETE")
@@ -1031,12 +1255,15 @@ class CodeScanner:
         self._log(f"Time: {(datetime.now() - self.start_time).total_seconds()/60:.1f} minutes")
         self._log(f"Repos: {len(self.all_repos)} | Users: {len(self.all_users)}")
         self._log(f"Keywords: {len(self.found_keywords)} | Entities: {len(self.found_entities)}")
-
-        # get_iteration_report runs and prints
+        if self.enable_secret_detection:
+            self._log(f"Secrets Found: {len(self.secret_findings)}")
+        
+        # Get iteration report
         report = self.get_iteration_report()
         self._log(report)
-
-        return ScanResult(
+        
+        # Return result with secret findings
+        result = ScanResult(
             self.all_repos, 
             self.all_users, 
             self.found_keywords, 
@@ -1044,7 +1271,12 @@ class CodeScanner:
             self.searched_terms, 
             datetime.now().isoformat()
         )
-
+        
+        # Attach secret findings to result
+        result.secret_findings = self.secret_findings
+        result.secrets_summary = self.get_secrets_summary()
+        
+        return result
 
     def _explore_keywords_hybrid(self, search_queue, max_keywords=3):
         new_keywords = self.extract_keywords_from_results(self.all_repos, self.all_users)

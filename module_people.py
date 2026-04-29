@@ -23,6 +23,7 @@ class PeopleScanner:
         self.min_delay = 3  # Increased slightly for safety
         self.html_scraper = HTMLScraper(delay=1.5)
         self.discovered_people = []
+        self.scraped_urls_global = set()
 
     def _log(self, message: str):
         print(message)
@@ -148,7 +149,7 @@ class PeopleScanner:
             'Upgrade-Insecure-Requests': '1'
         }
 
-    def scan_all_sources(self, limit=10):
+    def scan_all_sources(self, limit=100):
         all_results = []
         
         # 1. DuckDuckGo
@@ -179,7 +180,7 @@ class PeopleScanner:
             print(f"  ✓ Yahoo: {len(yahoo_res)} results")
 
         # 5. Google Dorking 
-        if len(all_results) < 10:
+        if len(all_results) < limit:
             print("🔍 Searching via Google Dorking (slow)...")
             google_res = self.search_google_dork(5)
             all_results.extend(google_res)
@@ -307,18 +308,31 @@ class PeopleScanner:
         # Strip trailing tracking / query params LinkedIn sometimes leaves
         slug = slug.split("?")[0].rstrip("/")
 
-        # Strip trailing numeric hash (e.g. -a82889101, -1a2253126, -219389228)
-        slug = re.sub(r"-[a-f0-9]{6,}$", "", slug, flags=re.IGNORECASE)
-        slug = re.sub(r"-\d{5,}$", "", slug)
+        # Pattern 1: Strips hex IDs like -a82889101, -1a2253126 (6+ chars of hex)
+        slug = re.sub(r"-[a-f0-9]{6,}(?:/|$|#|\?)", "", slug, flags=re.IGNORECASE)
+        # Pattern 2: Strips numeric IDs like -219389228 (5+ digits)
+        slug = re.sub(r"-\d{5,}(?:/|$|#|\?)", "", slug)
+        # Pattern 3: Strips activity patterns like -activity-7414972014442024961-viNP
+        slug = re.sub(r"-activity-\d+(?:-[a-zA-Z]+)?(?:/|$|#|\?)", "", slug, flags=re.IGNORECASE)
+        # Pattern 4: Strips any trailing hash or numeric suffix
+        slug = re.sub(r"#[a-f0-9]+$", "", slug, flags=re.IGNORECASE)
+        slug = re.sub(r"-\d+$", "", slug)
 
         # Split on hyphens first
         parts = [p for p in slug.split("-") if p]
 
         if len(parts) == 1:
             # Single run-together slug — no hyphens 
-            # We can't reliably split arbitrary German compound names,
-            # so just title-case the whole thing as a single token.
             word = parts[0]
+            if any(c.isupper() for c in word) and not word.isupper():
+                # Split camelCase: "florianLennartWeiss" -> "florian Lennart Weiss"
+                word = re.sub(r'([a-z])([A-Z])', r'\1 \2', word)
+                # Split on uppercase followed by lowercase: "FLorian" -> "F Lorian" (less common)
+                word = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', word)
+                parts = word.split()
+                if len(parts) > 1:
+                    return " ".join(part.capitalize() for part in parts)
+                
             # Capitalise on lowercase→uppercase transitions (camelCase guard)
             display = re.sub(r"([a-z])([A-Z])", r"\1 \2", word).title()
             return display if len(display) > 2 else "Unknown"
@@ -337,17 +351,22 @@ class PeopleScanner:
             # Drop very short connector tokens that aren't initials
             if len(part) == 1 and not part.isupper():
                 continue
+            if part_lower in ['und', 'der', 'die', 'das', 'von', 'van', 'de']:
+                continue
             filtered.append(part.capitalize())
 
         if not filtered:
             return "Unknown"
 
-        # LinkedIn often appends the job title or employer after the actual name;
-        # heuristically keep only the first 2–3 tokens as the "name" portion
-        # unless they're all very short (initials + surname).
-        name_tokens = filtered[:3] if len(filtered) > 3 else filtered
-        return " ".join(name_tokens)
-
+        # Keep reasonable number of tokens (first 2-4, but ensure we have at least first+last)
+        if len(filtered) > 4:
+            # Try to identify first and last name
+            first_name = filtered[0]
+            last_name = filtered[-1]
+            return f"{first_name} {last_name}"
+        
+        return " ".join(filtered[:3] if len(filtered) > 3 else filtered)
+    
     def search_bing(self, limit):
         results = []
         query = f'site:linkedin.com/in/ "{self.company}"'
@@ -394,7 +413,7 @@ class PeopleScanner:
         
         params = {
             'q': query,
-            'num': min(limit, 10)
+            'num': min(limit, 100)
         }
         
         try:

@@ -9,15 +9,15 @@ from typing import Dict, List, Any, Optional
 
 _INFRA_WEIGHTS = {
     "exposed_admin_portal":     30,   # /admin, /phpmyadmin, wp-admin etc. resolved
-    "missing_dmarc":            20,   # no DMARC TXT record at all
-    "dmarc_policy_none":        10,   # DMARC exists but p=none (monitors only)
-    "missing_spf":              15,   # no SPF record
-    "spf_too_permissive":        8,   # SPF ends in ~all or +all
-    "missing_hsts":             10,   # no Strict-Transport-Security header
+    "missing_dmarc":             8,   # no DMARC TXT record at all
+    "dmarc_policy_none":         4,   # DMARC exists but p=none (monitors only)
+    "missing_spf":               5,   # no SPF record
+    "spf_too_permissive":        3,   # SPF ends in ~all or +all
+    "missing_hsts":              5,   # no Strict-Transport-Security header
     "server_header_exposed":     5,   # Server: Apache/2.4.51 leaks version
     "x_powered_by_exposed":      5,   # X-Powered-By header present
-    "safe_browsing_flagged":    40,   # Google Safe Browsing hit
-    "per_subdomain":             8,   # each exposed subdomain (capped)
+    "safe_browsing_flagged":    30,   # Google Safe Browsing hit
+    "per_subdomain":             4,   # each exposed subdomain (capped)
 }
 
 _CODE_WEIGHTS = {
@@ -76,98 +76,156 @@ def _score_infrastructure(
 
     signals: Dict[str, int] = {}
     raw = 0
+    
+    # Track what we've found
+    has_spf = False
+    has_dmarc = False
+    has_hsts = False
+    has_mail_security = False
+    spf_strict = False
+    dmarc_enforced = False
+    
+    # Track what's missing (start with True, set to False when found)
+    missing_spf = True
+    missing_dmarc = True
+    missing_hsts = True
 
-    # Safe Browsing─
+    # Process infrastructure items
+    for item in (infra_data or []):
+        if not isinstance(item, dict):
+            continue
+            
+        software = item.get("Software", "").lower()
+        risk = item.get("Risk", "").lower()
+        
+        # Detect mail security from Software field
+        if "spf" in software or "mail security" in software:
+            has_spf = True
+            missing_spf = False
+            # Check if it's strict (usually these services are properly configured)
+            if "office 365" in software or "google workspace" in software:
+                spf_strict = True
+        
+        # Detect DMARC from Software field
+        if "dmarc" in software:
+            has_dmarc = True
+            missing_dmarc = False
+            if "reject" in software or "quarantine" in software:
+                dmarc_enforced = True
+        
+        # Detect HSTS from header info
+        if "hsts" in software or "strict-transport" in software:
+            has_hsts = True
+            missing_hsts = False
+        
+        # If using major providers, assume they have proper security
+        if any(provider in software for provider in ["google workspace", "office 365", "atlassian"]):
+            has_mail_security = True
+            # Major providers have SPF and DMARC by default
+            if missing_spf:
+                missing_spf = False
+                has_spf = True
+                spf_strict = True
+            if missing_dmarc:
+                missing_dmarc = False
+                has_dmarc = True
+                dmarc_enforced = True
+    
+    # Safe Browsing check
     status = str(safe_search.get("status", "")).lower() if safe_search else ""
-    if "❌" in status or "unsafe" in status or "malware" in status:
+    if any(x in status for x in ["❌", "unsafe", "malware", "dangerous"]):
         signals["safe_browsing_flagged"] = _INFRA_WEIGHTS["safe_browsing_flagged"]
         raw += signals["safe_browsing_flagged"]
-
+        print(f"🔴 Safe Browsing flagged: +{_INFRA_WEIGHTS['safe_browsing_flagged']} points")
+    
     # Subdomains
     if subdomains:
         sub_points = min(len(subdomains) * _INFRA_WEIGHTS["per_subdomain"], 32)
-        signals["exposed_subdomains"] = sub_points
-        raw += sub_points
-
-        # Admin portal pattern in any subdomain name
+        if sub_points > 0:
+            signals["exposed_subdomains"] = sub_points
+            raw += sub_points
+            print(f"🌐 {len(subdomains)} exposed subdomains: +{sub_points} points")
+        
         for sub in subdomains:
             portal = str(sub.get("Portal", "") or sub.get("Subdomain", ""))
             if _ADMIN_PORTAL_PATTERNS.search(portal):
                 signals["exposed_admin_portal"] = _INFRA_WEIGHTS["exposed_admin_portal"]
                 raw += signals["exposed_admin_portal"]
-                break  # count once
-
-    # DNS record analysis
-    has_spf    = False
-    has_dmarc  = False
-    spf_strict = False
-    dmarc_enforced = False
-
-    for item in (infra_data or []):
-        item_str = ""
-        if isinstance(item, dict):
-            # Flatten all string values for pattern matching
-            item_str = " ".join(str(v) for v in item.values()).lower()
-        else:
-            item_str = str(item).lower()
-
-        # SPF
-        if "v=spf1" in item_str:
-            has_spf = True
-            # -all is strict, ~all is soft-fail (still risky), +all is open relay
-            if "-all" in item_str:
-                spf_strict = True
-            elif "+all" in item_str or "~all" in item_str:
-                spf_strict = False  # permissive
-
-        # DMARC
-        if "v=dmarc1" in item_str:
-            has_dmarc = True
-            if "p=reject" in item_str or "p=quarantine" in item_str:
-                dmarc_enforced = True
-
-        # HTTP headers — missing HSTS
-        if isinstance(item, dict):
-            header_type = str(item.get("Type", "") or item.get("Header", "")).lower()
-            value       = str(item.get("Value", "") or item.get("Content", "")).lower()
-
-            if "strict-transport-security" in header_type or \
-               "strict-transport-security" in item_str:
-                pass 
-            elif "header" in header_type and "strict" not in item_str:
-                # Only penalise once if we see headers but HSTS is absent
-                if "missing_hsts" not in signals:
-                    signals["missing_hsts"] = _INFRA_WEIGHTS["missing_hsts"]
-
-            # Server version leakage
-            server_val = str(item.get("Server", "") or "")
-            if _RISKY_HEADER_PATTERNS.search(server_val):
-                signals["server_header_exposed"] = _INFRA_WEIGHTS["server_header_exposed"]
-
-            # X-Powered-By
-            if "x-powered-by" in item_str or "x_powered_by" in item_str:
-                signals["x_powered_by_exposed"] = _INFRA_WEIGHTS["x_powered_by_exposed"]
-
-    if not has_spf:
+                print(f"⚠️ Admin portal found: +{_INFRA_WEIGHTS['exposed_admin_portal']} points")
+                break
+    
+    # DNS Security
+    if missing_spf:
         signals["missing_spf"] = _INFRA_WEIGHTS["missing_spf"]
+        raw += signals["missing_spf"]
+        print(f"📧 Missing SPF: +{_INFRA_WEIGHTS['missing_spf']} points")
     elif not spf_strict:
         signals["spf_too_permissive"] = _INFRA_WEIGHTS["spf_too_permissive"]
-
-    if not has_dmarc:
+        raw += signals["spf_too_permissive"]
+        print(f"⚠️ Permissive SPF: +{_INFRA_WEIGHTS['spf_too_permissive']} points")
+    else:
+        print(f"✅ SPF properly configured")
+    
+    if missing_dmarc:
         signals["missing_dmarc"] = _INFRA_WEIGHTS["missing_dmarc"]
+        raw += signals["missing_dmarc"]
+        print(f"📧 Missing DMARC: +{_INFRA_WEIGHTS['missing_dmarc']} points")
     elif not dmarc_enforced:
         signals["dmarc_policy_none"] = _INFRA_WEIGHTS["dmarc_policy_none"]
+        raw += signals["dmarc_policy_none"]
+        print(f"⚠️ DMARC monitor-only: +{_INFRA_WEIGHTS['dmarc_policy_none']} points")
+    else:
+        print(f"✅ DMARC properly configured")
+    
+    # Header Security - only penalize if headers are actually exposed
+    # Check for actual header exposures from your data
+    for item in (infra_data or []):
+        if not isinstance(item, dict):
+            continue
+        software = item.get("Software", "").lower()
+        
+        # HSTS detection
+        if "hsts" in software or "strict-transport" in software:
+            has_hsts = True
+            missing_hsts = False
+        
+        # Server header exposure (only if it shows version info)
+        if "server:" in software and any(v in software for v in ["apache", "nginx", "iis"]):
+            signals["server_header_exposed"] = _INFRA_WEIGHTS["server_header_exposed"]
+            raw += signals["server_header_exposed"]
+            print(f"🌐 Server header exposed: +{_INFRA_WEIGHTS['server_header_exposed']} points")
+        
+        # X-Powered-By exposure
+        if "x-powered-by" in software:
+            signals["x_powered_by_exposed"] = _INFRA_WEIGHTS["x_powered_by_exposed"]
+            raw += signals["x_powered_by_exposed"]
+            print(f"⚙️ X-Powered-By exposed: +{_INFRA_WEIGHTS['x_powered_by_exposed']} points")
+    
+    if missing_hsts:
+        signals["missing_hsts"] = _INFRA_WEIGHTS["missing_hsts"]
+        raw += signals["missing_hsts"]
+        print(f"🔒 Missing HSTS: +{_INFRA_WEIGHTS['missing_hsts']} points")
+    else:
+        print(f"✅ HSTS properly configured")
+    
+          
+    # Cap at 100
+    final_score = min(round(raw), 100)
 
-    # Add remaining signals to raw
-    for k, v in signals.items():
-        if k not in ("exposed_subdomains",):
-            raw += v
-
+    if has_mail_security and not missing_spf and not missing_dmarc:
+        # Good mail security configuration
+        print("✅ Good mail security detected (Google/Microsoft/Atlassian)")
+        # Apply a discount to the final score
+        final_score = max(final_score * 0.8, 0)  # Reduce by 20%
+            
+    print(f"\n📊 Infrastructure Score Breakdown:")
+    print(f"   Raw points: {raw}")
+    print(f"   Final score: {final_score}/100")
+    
     return {
-        "score":   min(round(raw), 100),
+        "score":   final_score,
         "signals": signals,
     }
-
 
 def _score_code(code_df: pd.DataFrame) -> Dict:
     if code_df is None or code_df.empty:
